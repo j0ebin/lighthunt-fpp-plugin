@@ -1,0 +1,37 @@
+{
+  "fppd": "running",
+  "version": "9.1",
+  "branch": "master",
+  "platform": "Raspberry Pi",
+  "uuid": "M1-00000000",
+  "host_name": "FPP",
+  "host_description": "",
+  "mode": 2,
+  "mode_name": "player",
+  "status": 1,
+  "bridging": false,
+  "multisync": false,
+  "powerBad": 0,
+  "channelInputsEnabled": false,
+  "channelOutputsEnabled": true,
+  "volume": 70,
+  "next_playlist": {
+    "playlist": "",
+    "start_time": ""
+  },
+  "status_name": "playing",
+  "current_playlist": {
+    "playlist": "Halloween",
+    "description": "",
+    "type": "sequence",
+    "index": "1",
+    "count": "12",
+    "generated": false
+  },
+  "current_sequence": "Halloween/Monster Mash - Bobby Pickett.fseq",
+  "current_song": "",
+  "seconds_played": "10",
+  "seconds_remaining": "140",
+  "time_elapsed": "00:10",
+  "time_remaining": "02:20"
+}

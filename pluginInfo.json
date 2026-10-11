@@ -1,0 +1,67 @@
+{
+	"repoName": "lighthunt-fpp-plugin",
+	"name": "Light Hunt - Now Playing",
+	"author": "Light Hunt (lightshunt.com)",
+	"description": "Shows the song Falcon Player is playing on your display page at lightshunt.com. After you pair it with a code, a small background process reads FPP's local status every 5 seconds and sends the current song (title and artist tags, audio file name, sequence name, play state, seconds played and left, playlist name) plus the FPP and plugin versions to lightshunt.com. Nothing else leaves this device and the plugin never controls your show.",
+	"homeURL": "https://github.com/j0ebin/lighthunt-fpp-plugin",
+	"srcURL": "https://github.com/j0ebin/lighthunt-fpp-plugin.git",
+	"bugURL": "https://github.com/j0ebin/lighthunt-fpp-plugin/issues",
+	"allowUpdates": 1,
+	"releaseNotesStyle": "gitHistory",
+	"privacy": {
+		"summary": "Sends the song now playing (title, artist, file names, play state, times) and the FPP and plugin versions to lightshunt.com once you pair it. Nothing else leaves this device.",
+		"sends": [
+			{
+				"to": "lightshunt.com",
+				"what": "Now-playing song info, play state, times, playlist name, FPP and plugin version",
+				"why": "Show the current song on your Light Hunt display page",
+				"alwaysOn": false
+			},
+			{
+				"to": "lightshunt.com",
+				"what": "Pairing request with the plugin version, then a pairing code check",
+				"why": "Link this FPP to your Light Hunt display",
+				"alwaysOn": false
+			}
+		],
+		"collects": [
+			{
+				"what": "Light Hunt pairing key and display name",
+				"about": "operator",
+				"keptDays": null,
+				"canDelete": true,
+				"where": "/home/fpp/media/plugindata/lighthunt-fpp-plugin"
+			}
+		],
+		"sensors": [],
+		"remoteAccess": "none",
+		"systemChanges": [
+			{
+				"kind": "service",
+				"what": "Runs one background PHP process (the poller) while FPP is running; stops it when FPP stops"
+			}
+		],
+		"closedCode": false,
+		"other": "Reads FPP's local API at 127.0.0.1 (status and media tags). Sends nothing until you pair. The key file is mode 0600. The log is plugin-lighthunt-fpp-plugin.log and never holds the key. Unpair removes the key from this device; uninstalling removes the key, status file and log."
+	},
+	"versions": [
+		{
+			"minFPPVersion": "8.0",
+			"maxFPPVersion": "8.99",
+			"branch": "main",
+			"sha": ""
+		},
+		{
+			"minFPPVersion": "9.0",
+			"maxFPPVersion": "9.99",
+			"branch": "main",
+			"sha": ""
+		},
+		{
+			"minFPPVersion": "10.0",
+			"maxFPPVersion": "10.99",
+			"branch": "main",
+			"sha": ""
+		}
+	]
+}

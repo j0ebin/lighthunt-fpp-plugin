@@ -1,0 +1,35 @@
+{
+  "fppd": "running",
+  "version": "9.1",
+  "branch": "master",
+  "platform": "Raspberry Pi",
+  "uuid": "M1-00000000",
+  "host_name": "FPP",
+  "host_description": "",
+  "mode": 2,
+  "mode_name": "player",
+  "status": 1,
+  "bridging": false,
+  "multisync": false,
+  "powerBad": 0,
+  "channelInputsEnabled": false,
+  "channelOutputsEnabled": true,
+  "volume": 70,
+  "next_playlist": {
+    "playlist": "",
+    "start_time": ""
+  },
+  "status_name": "stopping gracefully",
+  "current_playlist": {
+    "playlist": "Christmas Show",
+    "description": "",
+    "type": "both",
+    "index": "1",
+    "count": "12",
+    "generated": false
+  },
+  "current_sequence": "Carol of the Bells.fseq",
+  "current_song": "Carol of the Bells.mp3",
+  "seconds_played": "200",
+  "seconds_remaining": "12"
+}

@@ -1,0 +1,33 @@
+{
+  "fppd": "running",
+  "version": "9.1",
+  "branch": "master",
+  "platform": "Raspberry Pi",
+  "uuid": "M1-00000000",
+  "host_name": "FPP",
+  "host_description": "",
+  "mode": 2,
+  "mode_name": "player",
+  "status": 1,
+  "bridging": false,
+  "multisync": false,
+  "powerBad": 0,
+  "channelInputsEnabled": false,
+  "channelOutputsEnabled": true,
+  "volume": 70,
+  "next_playlist": {
+    "playlist": "",
+    "start_time": ""
+  },
+  "status_name": "testing",
+  "current_playlist": {
+    "playlist": "",
+    "type": "",
+    "index": "0",
+    "count": "0",
+    "description": "",
+    "generated": false
+  },
+  "current_sequence": "",
+  "current_song": ""
+}
