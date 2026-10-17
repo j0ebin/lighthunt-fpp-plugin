@@ -11,6 +11,8 @@ if ! command -v php >/dev/null 2>&1; then
 fi
 
 mkdir -p "$DATA_DIR"
+# FPP runs this as root, but its web pages run as the media folder's owner (fpp) and must write here.
+chown "$(stat -c '%u:%g' "$MEDIADIR")" "$DATA_DIR"
 chmod 0775 "$DATA_DIR" 2>/dev/null || true
 chmod +x "$PLUGIN_DIR"/scripts/*.sh 2>/dev/null || true
 echo "Light Hunt plugin installed. Open Status/Control > Light Hunt to pair it with your display."

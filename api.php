@@ -69,17 +69,25 @@ function lighthuntfpppluginStatus()
 // POST /api/plugin/lighthunt-fpp-plugin/pairstart
 function lighthuntfpppluginPairStart()
 {
+    // Check before asking Light Hunt for a code: a code this player can't save is one the owner never sees.
+    $cantSave = 'This player can\'t save Light Hunt\'s files. In FPP, open Status/Control, press Restart FPPD, then try again.';
+    if (!is_writable(lh_data_dir())) {
+        return json(array('ok' => false, 'error' => $cantSave));
+    }
     $r = lh_post_json('/api/relay/pair', array('relayVersion' => LH_VERSION));
     if ($r['code'] !== 201 || !isset($r['json']['code'], $r['json']['deviceSecret'], $r['json']['expiresAt'])) {
         $message = isset($r['json']['error']) ? $r['json']['error'] : 'Could not reach Light Hunt. Check this device has internet access.';
         return json(array('ok' => false, 'error' => $message));
     }
-    lh_write_json('pending.json', array(
+    $saved = lh_write_json('pending.json', array(
         'code' => $r['json']['code'],
         'deviceSecret' => $r['json']['deviceSecret'],
         'expiresAt' => $r['json']['expiresAt'],
         'lastCheck' => 0,
     ));
+    if (!$saved) {
+        return json(array('ok' => false, 'error' => $cantSave));
+    }
     return json(array('ok' => true, 'code' => $r['json']['code'], 'url' => lh_pair_url($r['json']['code']), 'expiresAt' => $r['json']['expiresAt']));
 }
 

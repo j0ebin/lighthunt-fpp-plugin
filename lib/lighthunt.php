@@ -6,7 +6,7 @@
  */
 
 define('LH_REPO', 'lighthunt-fpp-plugin');
-define('LH_VERSION', '0.1.0');
+define('LH_VERSION', '0.1.1');
 define('LH_KEY_RE', '/^lhr_[A-Za-z0-9_-]{43}$/');
 define('LH_HEARTBEAT_SECONDS', 30);
 define('LH_POLL_SECONDS', 5);
