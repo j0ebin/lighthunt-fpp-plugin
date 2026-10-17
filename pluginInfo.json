@@ -6,6 +6,7 @@
 	"homeURL": "https://github.com/j0ebin/lighthunt-fpp-plugin",
 	"srcURL": "https://github.com/j0ebin/lighthunt-fpp-plugin.git",
 	"bugURL": "https://github.com/j0ebin/lighthunt-fpp-plugin/issues",
+	"iconURL": "https://raw.githubusercontent.com/j0ebin/lighthunt-fpp-plugin/main/icon.png",
 	"allowUpdates": 1,
 	"releaseNotesStyle": "gitHistory",
 	"privacy": {

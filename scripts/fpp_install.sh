@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 # Runs when the plugin is installed or updated. Nothing to download or build: Falcon Player already
 # ships PHP and curl. Safe to run again.
 # shellcheck source=common.sh
