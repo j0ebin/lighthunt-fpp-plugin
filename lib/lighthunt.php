@@ -1,12 +1,17 @@
 <?php
 /**
  * Shared by the background poller (lighthunt-daemon.php) and the settings page API (api.php).
- * Runs on the PHP that ships with Falcon Player 8, 9 and 10 (PHP 7.4 through 8.x), so it avoids
+ * Runs on the PHP that ships with Falcon Player 9 and 10 (PHP 7.4 through 8.x), so it avoids
  * newer syntax: no str_starts_with, match, named arguments or nullsafe operators.
+ *
+ * Everything is in the LightHunt namespace, because FPP loads api.php into the same PHP process as
+ * its own code and every other plugin. The constants below stay global (define() with a plain name).
  */
 
+namespace LightHunt;
+
 define('LH_REPO', 'lighthunt-fpp-plugin');
-define('LH_VERSION', '0.1.1');
+define('LH_VERSION', '0.2.0');
 define('LH_KEY_RE', '/^lhr_[A-Za-z0-9_-]{43}$/');
 define('LH_HEARTBEAT_SECONDS', 30);
 define('LH_POLL_SECONDS', 5);
@@ -27,13 +32,13 @@ function lh_log_file()
     return ($env ? rtrim($env, '/') : lh_media_dir() . '/logs') . '/plugin-' . LH_REPO . '.log';
 }
 
+/**
+ * Never creates the folder. Only fpp_install.sh and start.sh (as root) do, so a poller or a page
+ * that outlives an uninstall cannot bring the folder back.
+ */
 function lh_data_dir()
 {
-    $dir = lh_media_dir() . '/plugindata/' . LH_REPO;
-    if (!is_dir($dir)) {
-        @mkdir($dir, 0775, true);
-    }
-    return $dir;
+    return lh_media_dir() . '/plugindata/' . LH_REPO;
 }
 
 function lh_file($name)
@@ -88,10 +93,15 @@ function lh_fpp_url()
 
 /* ---------- HTTP ---------- */
 
-/** Returns ['code' => int (0 = network failure), 'json' => array|null, 'retryAfter' => int|null]. */
+/**
+ * Returns ['code' => int (0 = network failure), 'json' => array|null, 'retryAfter' => int|null,
+ * 'errno' => curl error number (0 when curl succeeded), 'error' => curl error text,
+ * 'serverTime' => the server's Date header as a Unix time, or null].
+ */
 function lh_http($method, $url, $headers = array(), $body = null, $timeout = 5)
 {
     $retry = null;
+    $serverTime = null;
     $ch = curl_init($url);
     curl_setopt_array($ch, array(
         CURLOPT_CUSTOMREQUEST => $method,
@@ -101,9 +111,12 @@ function lh_http($method, $url, $headers = array(), $body = null, $timeout = 5)
         CURLOPT_HTTPHEADER => $headers,
         CURLOPT_USERAGENT => 'LightHuntFPP/' . LH_VERSION,
         CURLOPT_FOLLOWLOCATION => false,
-        CURLOPT_HEADERFUNCTION => function ($c, $line) use (&$retry) {
+        CURLOPT_HEADERFUNCTION => function ($c, $line) use (&$retry, &$serverTime) {
             if (stripos($line, 'retry-after:') === 0) {
                 $retry = (int) trim(substr($line, 12));
+            } elseif (stripos($line, 'date:') === 0) {
+                $t = strtotime(trim(substr($line, 5)));
+                $serverTime = $t === false ? null : $t;
             }
             return strlen($line);
         },
@@ -113,12 +126,77 @@ function lh_http($method, $url, $headers = array(), $body = null, $timeout = 5)
     }
     $raw = curl_exec($ch);
     $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $errno = curl_errno($ch);
+    $error = curl_error($ch);
     curl_close($ch);
     if ($raw === false) {
-        return array('code' => 0, 'json' => null, 'retryAfter' => null);
+        return array('code' => 0, 'json' => null, 'retryAfter' => null, 'errno' => $errno, 'error' => $error, 'serverTime' => $serverTime);
     }
     $json = json_decode($raw, true);
-    return array('code' => $code, 'json' => is_array($json) ? $json : null, 'retryAfter' => $retry);
+    return array('code' => $code, 'json' => is_array($json) ? $json : null, 'retryAfter' => $retry, 'errno' => 0, 'error' => '', 'serverTime' => $serverTime);
+}
+
+/**
+ * Why a Light Hunt request failed, as a short key the status file can hold: 'tls' (certificate or
+ * secure handshake, almost always a wrong clock on the player), 'network', or 'http_<code>'.
+ */
+function lh_reason_key($r)
+{
+    if ($r['code'] === 0) {
+        $errno = isset($r['errno']) ? (int) $r['errno'] : 0;
+        return in_array($errno, array(35, 51, 60), true) ? 'tls' : 'network';
+    }
+    return 'http_' . (int) $r['code'];
+}
+
+/** The sentence for a reason key. $now is the player's clock, shown so the owner can spot a wrong date. */
+function lh_reason_text($key, $now)
+{
+    if ($key === 'tls') {
+        return 'Secure connection to Light Hunt failed. Check this player\'s date and time (it says ' . date('D j M Y, H:i T', $now) . ').';
+    }
+    if ($key === 'network') {
+        return 'Could not reach Light Hunt. Check this device has internet access.';
+    }
+    if (strpos((string) $key, 'http_') === 0) {
+        return 'Light Hunt answered with an error (HTTP ' . (int) substr($key, 5) . ').';
+    }
+    return null;
+}
+
+/**
+ * A code's expiry on this player's clock. Light Hunt's expiresAt is on Light Hunt's clock, so a
+ * player whose clock is off would see every new code as already expired (or never expiring). Measure
+ * the code's lifetime on Light Hunt's clock (expiresAt minus its Date header) and add it to our now.
+ */
+function lh_local_deadline($expiresAt, $serverTime, $now)
+{
+    $expires = strtotime((string) $expiresAt);
+    if ($expires === false) {
+        return $now + 600; // codes live 10 minutes
+    }
+    return $now + ($expires - ($serverTime === null ? $now : $serverTime));
+}
+
+/** When a pending pairing runs out, on this player's clock. */
+function lh_pending_deadline($pending)
+{
+    if (isset($pending['deadline'])) {
+        return (int) $pending['deadline'];
+    }
+    $t = isset($pending['expiresAt']) ? strtotime($pending['expiresAt']) : false;
+    return $t === false ? 0 : $t;
+}
+
+/** A warning when this player's clock differs from Light Hunt's by more than 5 minutes, else null. */
+function lh_clock_warning($serverTime, $now)
+{
+    if ($serverTime === null || abs($serverTime - $now) <= 300) {
+        return null;
+    }
+    $minutes = (int) round(abs($serverTime - $now) / 60);
+    return 'This player\'s clock is about ' . $minutes . ' minutes ' . ($now > $serverTime ? 'ahead of' : 'behind')
+        . ' Light Hunt\'s (it says ' . date('D j M Y, H:i T', $now) . '). Check this player\'s date and time.';
 }
 
 /** Light Hunt POST with a JSON body. */
@@ -274,7 +352,7 @@ function lh_new_state()
     return array(
         'key' => null, 'sig' => null, 'sentAt' => 0, 'nextTry' => 0, 'fails' => 0, 'rejected' => null,
         'tagCache' => array(), 'lastOk' => null, 'lastReportAt' => null, 'viewers' => null,
-        'lastStatusBody' => null, 'lastStatusAt' => 0, 'badSig' => null,
+        'lastStatusBody' => null, 'lastStatusAt' => 0, 'badSig' => null, 'reason' => null,
     );
 }
 
@@ -332,6 +410,7 @@ function lh_tick(&$S, $now, $io)
                 lh_log('Reports are reaching Light Hunt again');
             }
             $S['lastOk'] = true;
+            $S['reason'] = null;
             $S['fails'] = 0;
             $S['sig'] = $sig;
             $S['sentAt'] = $now;
@@ -354,8 +433,10 @@ function lh_tick(&$S, $now, $io)
         } else {
             $S['fails']++;
             $S['nextTry'] = $now + LH_BACKOFF[min($S['fails'], count(LH_BACKOFF)) - 1];
+            $S['reason'] = lh_reason_key($r);
             if ($S['lastOk'] !== false) {
-                lh_log('Cannot reach Light Hunt (HTTP ' . $code . '). Retrying with a growing delay.');
+                $what = $code === 0 ? 'curl error ' . (isset($r['errno']) ? (int) $r['errno'] : 0) . ': ' . (isset($r['error']) ? $r['error'] : '') : 'HTTP ' . $code;
+                lh_log('Cannot reach Light Hunt (' . $what . '). Retrying with a growing delay.');
             }
             $S['lastOk'] = false;
         }
@@ -368,8 +449,15 @@ function lh_tick(&$S, $now, $io)
             : (isset($report['mediaFilename']) ? $report['mediaFilename'] : (isset($report['name']) ? $report['name'] : null)),
         'lastReportAt' => $S['lastReportAt'],
         'viewers' => $S['viewers'],
+        'reason' => $S['lastOk'] === false ? $S['reason'] : null,
     );
     lh_write_status_if_needed($S, $now, $doc);
+}
+
+/** True when this plugin has been uninstalled out from under a running poller: its file or data folder is gone. */
+function lh_orphaned($daemonFile)
+{
+    return !is_file($daemonFile) || !is_dir(lh_data_dir());
 }
 
 /** True when a poller holds the lock. Opens read-only so the web user can check a lock the poller created as another user. */
@@ -389,4 +477,22 @@ function lh_daemon_running()
     }
     fclose($fh);
     return !$free;
+}
+
+/**
+ * Starts the poller from a page request, only when fppd answers and wasn't stopped on purpose.
+ * preStop.sh leaves a `stopped` marker that start.sh clears, so a page open in a browser cannot
+ * bring the poller back while fppd is shutting down or stopped.
+ */
+function lh_start_poller()
+{
+    if (lh_daemon_running() || is_file(lh_file('stopped')) || !is_dir(lh_data_dir()) || lh_fpp_status() === null) {
+        return;
+    }
+    exec('/bin/sh ' . escapeshellarg(dirname(__DIR__) . '/scripts/start.sh') . ' >/dev/null 2>&1 &');
+}
+
+function lh_pair_url($code)
+{
+    return lh_base_url() . '/relay/pair?code=' . rawurlencode($code);
 }

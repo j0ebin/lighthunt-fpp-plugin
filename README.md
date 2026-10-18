@@ -6,9 +6,9 @@ This folder is laid out as the root of an FPP plugin repository (`lighthunt-fpp-
 
 ## Supported versions
 
-FPP 8, 9 and 10 only. `pluginInfo.json` lists nothing else, so Plugin Manager marks FPP 11 and later as incompatible until a new version is added. It runs on the PHP and curl that FPP ships (PHP 7.4 through 8.x), with no extra packages.
+FPP 9 and 10 only. `pluginInfo.json` lists nothing else, so Plugin Manager marks FPP 8 and earlier, and FPP 11 and later, as incompatible until a new version is added. It runs on the PHP and curl that FPP ships (PHP 7.4 through 8.x), with no extra packages.
 
-Tested against a real FPP 10 (master) in Docker. FPP 8 and 9 are not tested. The plugin reads status fields that FPP's own status page has used for years, but check on your own player first.
+Tested on FPP 9.5, 10.2 and the current nightly. FPP 8 isn't supported yet.
 
 ## Install
 
@@ -27,7 +27,7 @@ A display has one sender at a time. Pairing a new FPP, or the Windows Relay for 
 ## Unpair and uninstall
 
 - **Unpair** on the plugin page removes the key from this player. To also end the link on Light Hunt, press **Unpair** under **Show what's playing** on your display page. If you unpair there first, the plugin notices within 30 seconds and offers to pair again.
-- **Uninstall** in Plugin Manager removes the key, the status file and the log from this player.
+- **Uninstall** in Plugin Manager stops the poller and removes the key, the status file and the log from this player.
 
 ## What it sends
 
@@ -45,7 +45,7 @@ Only after you pair. Every 5 seconds the plugin reads `http://127.0.0.1/api/fppd
   "duration": 212,
   "showName": "Christmas Show",
   "fppVersion": "10.0",
-  "relayVersion": "0.1.0"
+  "relayVersion": "0.2.0"
 }
 ```
 
@@ -54,15 +54,16 @@ Only after you pair. Every 5 seconds the plugin reads `http://127.0.0.1/api/fppd
 - `showName` is the name of the running playlist.
 - `relayVersion` is the plugin version. The pairing step sends the plugin version too, then the code check.
 
-Nothing else leaves the player: no sequences, audio files, network settings, location or passwords. Light Hunt sends back only `{ "ok": true, "viewers": 3 }`.
+Everything above, the playlist name included, appears on your public Light Hunt display page. Nothing else leaves the player: no sequences, audio files, network settings, location or passwords. Light Hunt sends back only `{ "ok": true, "viewers": 3 }`.
 
 On the player, the key lives in `plugindata/lighthunt-fpp-plugin/config.json` (mode 0600). The one log is `plugin-lighthunt-fpp-plugin.log`; it never holds the key.
 
 ## How it works
 
 - `lighthunt-daemon.php` is a small PHP process started by `scripts/postStart.sh` and stopped by `scripts/preStop.sh`. It runs apart from `fppd`, so a slow network can never hold up your show. Until you pair it, it only waits.
+- The poller always runs as the media folder's owner (`fpp`), whether `postStart.sh` or the plugin page started it. `preStop.sh`, `fpp_uninstall.sh` and an update find it by its command line, so no copy is missed. While `fppd` is stopped the plugin page does not restart it, and the poller never creates the data folder (only `fpp_install.sh` and `start.sh` run as root do), so nothing comes back after an uninstall.
 - Failed sends retry after 5, 10, 20, 40, then 60 seconds. A `429` waits for `Retry-After`. A `401` (unpaired on Light Hunt) stops sending until you pair again.
-- `lib/lighthunt.php` holds the mapping from FPP's status to the report (`lh_build_report`) and the poll loop (`lh_tick`).
+- `lib/lighthunt.php` (namespace `LightHunt`, so it cannot clash with FPP or other plugins) holds the mapping from FPP's status to the report (`lh_build_report`) and the poll loop (`lh_tick`).
 - `api.php` serves the page's endpoints at `/api/plugin/lighthunt-fpp-plugin/`. The browser never sees the key or the pairing secret.
 - `status.php`, `about.php` and `menu.inc` are the pages.
 

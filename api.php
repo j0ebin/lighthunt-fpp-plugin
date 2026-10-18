@@ -6,26 +6,32 @@
 
 require_once __DIR__ . '/lib/lighthunt.php';
 
+use function LightHunt\lh_base_url;
+use function LightHunt\lh_clock_warning;
+use function LightHunt\lh_config;
+use function LightHunt\lh_daemon_running;
+use function LightHunt\lh_data_dir;
+use function LightHunt\lh_file;
+use function LightHunt\lh_local_deadline;
+use function LightHunt\lh_log;
+use function LightHunt\lh_pair_url;
+use function LightHunt\lh_pending_deadline;
+use function LightHunt\lh_post_json;
+use function LightHunt\lh_read_json;
+use function LightHunt\lh_reason_key;
+use function LightHunt\lh_reason_text;
+use function LightHunt\lh_start_poller;
+use function LightHunt\lh_write_json;
+
+// FPP looks up the endpoint list and the callbacks below by these exact global names.
 function getEndpointslighthuntfppplugin()
 {
     return array(
         array('method' => 'GET', 'endpoint' => 'status', 'callback' => 'lighthuntfpppluginStatus'),
         array('method' => 'POST', 'endpoint' => 'pairstart', 'callback' => 'lighthuntfpppluginPairStart'),
-        array('method' => 'GET', 'endpoint' => 'paircheck', 'callback' => 'lighthuntfpppluginPairCheck'),
+        array('method' => 'POST', 'endpoint' => 'paircheck', 'callback' => 'lighthuntfpppluginPairCheck'),
         array('method' => 'POST', 'endpoint' => 'unpair', 'callback' => 'lighthuntfpppluginUnpair'),
     );
-}
-
-function lh_start_poller()
-{
-    if (!lh_daemon_running()) {
-        exec('/bin/sh ' . escapeshellarg(__DIR__ . '/scripts/start.sh') . ' >/dev/null 2>&1 &');
-    }
-}
-
-function lh_pair_url($code)
-{
-    return lh_base_url() . '/relay/pair?code=' . rawurlencode($code);
 }
 
 // GET /api/plugin/lighthunt-fpp-plugin/status
@@ -34,7 +40,9 @@ function lighthuntfpppluginStatus()
     $cfg = lh_config();
     $running = lh_daemon_running();
     if ($cfg && !$running) {
-        lh_start_poller(); // heals a poller that was never started, e.g. right after installing
+        // Heals a poller that was never started, e.g. right after installing. Does nothing while fppd is
+        // stopped or stopping, so this page can never bring the poller back after preStop.sh.
+        lh_start_poller();
     }
     $status = lh_read_json('status.json');
     // A status written before the current pairing describes the old key, so ignore it until the poller reports again.
@@ -49,6 +57,7 @@ function lighthuntfpppluginStatus()
         'song' => $fresh && isset($status['song']) ? $status['song'] : null,
         'lastReportAt' => $fresh && isset($status['lastReportAt']) ? $status['lastReportAt'] : null,
         'viewers' => $fresh && isset($status['viewers']) ? $status['viewers'] : null,
+        'reason' => $fresh && isset($status['reason']) ? lh_reason_text($status['reason'], time()) : null,
         'display' => null,
         'pending' => null,
     );
@@ -60,8 +69,13 @@ function lighthuntfpppluginStatus()
         );
     }
     $pending = lh_read_json('pending.json');
-    if ($pending && isset($pending['expiresAt']) && strtotime($pending['expiresAt']) > time()) {
-        $out['pending'] = array('code' => $pending['code'], 'url' => lh_pair_url($pending['code']), 'expiresAt' => $pending['expiresAt']);
+    if ($pending && isset($pending['expiresAt']) && lh_pending_deadline($pending) > time()) {
+        $out['pending'] = array(
+            'code' => $pending['code'],
+            'url' => lh_pair_url($pending['code']),
+            'expiresAt' => $pending['expiresAt'],
+            'warning' => isset($pending['warning']) ? $pending['warning'] : null,
+        );
     }
     return json($out);
 }
@@ -76,29 +90,34 @@ function lighthuntfpppluginPairStart()
     }
     $r = lh_post_json('/api/relay/pair', array('relayVersion' => LH_VERSION));
     if ($r['code'] !== 201 || !isset($r['json']['code'], $r['json']['deviceSecret'], $r['json']['expiresAt'])) {
-        $message = isset($r['json']['error']) ? $r['json']['error'] : 'Could not reach Light Hunt. Check this device has internet access.';
+        $message = isset($r['json']['error']) ? $r['json']['error'] : lh_reason_text(lh_reason_key($r), time());
         return json(array('ok' => false, 'error' => $message));
     }
+    $now = time();
+    $warning = lh_clock_warning($r['serverTime'], $now);
     $saved = lh_write_json('pending.json', array(
         'code' => $r['json']['code'],
         'deviceSecret' => $r['json']['deviceSecret'],
         'expiresAt' => $r['json']['expiresAt'],
+        // expiresAt is on Light Hunt's clock; this is the same moment on this player's clock.
+        'deadline' => lh_local_deadline($r['json']['expiresAt'], $r['serverTime'], $now),
+        'warning' => $warning,
         'lastCheck' => 0,
     ));
     if (!$saved) {
         return json(array('ok' => false, 'error' => $cantSave));
     }
-    return json(array('ok' => true, 'code' => $r['json']['code'], 'url' => lh_pair_url($r['json']['code']), 'expiresAt' => $r['json']['expiresAt']));
+    return json(array('ok' => true, 'code' => $r['json']['code'], 'url' => lh_pair_url($r['json']['code']), 'expiresAt' => $r['json']['expiresAt'], 'warning' => $warning));
 }
 
-// GET /api/plugin/lighthunt-fpp-plugin/paircheck
+// POST /api/plugin/lighthunt-fpp-plugin/paircheck (it writes files, so not GET)
 function lighthuntfpppluginPairCheck()
 {
     $pending = lh_read_json('pending.json');
     if (!$pending) {
         return json(array('status' => lh_config() ? 'paired' : 'none'));
     }
-    if (strtotime($pending['expiresAt']) <= time()) {
+    if (lh_pending_deadline($pending) <= time()) {
         @unlink(lh_file('pending.json'));
         return json(array('status' => 'expired'));
     }
@@ -130,7 +149,8 @@ function lighthuntfpppluginPairCheck()
         @unlink(lh_file('pending.json'));
         return json(array('status' => 'expired'));
     }
-    return json(array('status' => 'pending', 'warning' => 'Could not reach Light Hunt. Still trying.'));
+    $why = $r['code'] === 0 ? lh_reason_text(lh_reason_key($r), time()) : 'Light Hunt answered with an error (HTTP ' . (int) $r['code'] . ').';
+    return json(array('status' => 'pending', 'warning' => $why . ' Still trying.'));
 }
 
 // POST /api/plugin/lighthunt-fpp-plugin/unpair

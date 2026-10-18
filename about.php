@@ -13,6 +13,7 @@
     <li>The plugin version and the Falcon Player version.</li>
     <li>Your pairing key, so Light Hunt knows which display the report is for.</li>
   </ul>
+  <p><strong>What it sends, including the playlist name, appears on your public Light Hunt display page</strong>, where anyone who visits can see it.</p>
   <p>Nothing else is sent. It sends nothing to anyone but lightshunt.com. It does not send your sequences, audio files, passwords, network settings or location.</p>
 
   <h2 class="h5">What stays on this device</h2>

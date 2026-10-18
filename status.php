@@ -6,6 +6,7 @@
   </p>
 
   <div id="lh-error" class="alert alert-danger d-none" role="alert"></div>
+  <div id="lh-warn" class="alert alert-warning d-none" role="status"></div>
 
   <div id="lh-unpaired" class="card mb-3 d-none">
     <div class="card-body">
@@ -36,7 +37,7 @@
     <div class="card-body">
       <h2 class="h5 card-title">Paired</h2>
       <p class="mb-1">Display: <a id="lh-display" href="#" target="_blank" rel="noopener noreferrer"></a></p>
-      <p class="mb-1">Status: <span id="lh-result" class="badge"></span></p>
+      <p class="mb-1">Status: <span id="lh-result" class="badge"></span> <span id="lh-reason" class="text-body-secondary small"></span></p>
       <p class="mb-1">Now playing: <span id="lh-song"></span></p>
       <p class="mb-1">Last report to Light Hunt: <span id="lh-last"></span></p>
       <p class="mb-3">Visitors in the last 5 minutes: <span id="lh-viewers"></span></p>
@@ -68,6 +69,12 @@
     show('lh-error', !!message);
   }
 
+  var netWarn = '';
+  function warn(message) {
+    $('lh-warn').textContent = message;
+    show('lh-warn', !!message);
+  }
+
   function ago(seconds) {
     if (!seconds) { return 'not yet'; }
     var s = Math.max(0, Math.round(Date.now() / 1000 - seconds));
@@ -88,6 +95,8 @@
     show('lh-unpaired', (!s.paired || revoked) && !s.pending);
     show('lh-pending', (!s.paired || revoked) && !!s.pending);
     show('lh-paired', s.paired && !revoked);
+    if (!s.pending) { netWarn = ''; }
+    warn(s.pending ? (netWarn || s.pending.warning || '') : '');
     if (s.pending) {
       $('lh-code').textContent = s.pending.code.replace(/^(\d{3})(\d{3})$/, '$1 $2');
       $('lh-pair-link').href = s.pending.url;
@@ -96,10 +105,11 @@
       var d = s.display || {};
       $('lh-display').textContent = d.name || 'Your display';
       $('lh-display').href = d.url || '#';
-      var r = !s.pollerRunning ? ['The background poller is not running. It is being started; if this stays, restart Falcon Player.', 'text-bg-danger']
+      var r = !s.pollerRunning ? ['The background poller is not running. It starts with Falcon Player; if this stays, restart Falcon Player.', 'text-bg-danger']
         : (s.result === null ? ['Starting...', 'text-bg-secondary'] : (RESULTS[s.result] || RESULTS.ok));
       $('lh-result').textContent = r[0];
       $('lh-result').className = 'badge ' + r[1];
+      $('lh-reason').textContent = s.pollerRunning && s.result === 'offline' && s.reason ? s.reason : '';
       var nowText = s.state === 'playing' ? (s.song || 'Playing') : (s.state === 'between' ? 'Between songs' : 'Nothing right now');
       $('lh-song').textContent = nowText;
       $('lh-last').textContent = ago(s.lastReportAt);
@@ -116,8 +126,9 @@
   }
 
   function checkPair() {
-    call('GET', 'paircheck').then(function (r) {
+    call('POST', 'paircheck').then(function (r) {
       if (r.status === 'expired') { fail('That code expired. Get a new one.'); }
+      netWarn = r.warning || '';
       refresh();
     }).catch(function () { refresh(); });
   }
@@ -126,6 +137,7 @@
     fail('');
     call('POST', 'pairstart').then(function (r) {
       if (!r.ok) { fail(r.error); return; }
+      netWarn = '';
       refresh();
     }).catch(function () { fail('Could not start pairing.'); });
   });

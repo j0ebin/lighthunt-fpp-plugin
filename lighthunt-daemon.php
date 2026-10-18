@@ -9,8 +9,20 @@
 
 require_once __DIR__ . '/lib/lighthunt.php';
 
+use function LightHunt\lh_file;
+use function LightHunt\lh_log;
+use function LightHunt\lh_new_state;
+use function LightHunt\lh_orphaned;
+use function LightHunt\lh_tick;
+
 if (PHP_SAPI !== 'cli') {
     exit(1);
+}
+
+// This process never creates the data folder (only fpp_install.sh and start.sh do), so after an
+// uninstall it finds nothing to lock and ends.
+if (lh_orphaned(__FILE__)) {
+    exit(0);
 }
 
 // One poller at a time. The lock goes away with the process, so a crash never leaves a stale one.
@@ -27,18 +39,18 @@ if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) {
 lh_log('Light Hunt poller started (plugin ' . LH_VERSION . ')');
 
 $io = array(
-    'status' => 'lh_fpp_status',
-    'tags' => 'lh_fpp_tags',
+    'status' => 'LightHunt\\lh_fpp_status',
+    'tags' => 'LightHunt\\lh_fpp_tags',
     'post' => function ($key, $json) {
-        return lh_post_json('/api/now-playing', $json, $key);
+        return \LightHunt\lh_post_json('/api/now-playing', $json, $key);
     },
 );
 
 $state = lh_new_state();
-while (true) {
+while (!lh_orphaned(__FILE__)) {
     try {
         lh_tick($state, time(), $io);
-    } catch (Throwable $e) {
+    } catch (\Throwable $e) {
         lh_log('Poller error: ' . $e->getMessage());
     }
     sleep(LH_POLL_SECONDS);

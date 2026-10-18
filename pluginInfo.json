@@ -10,12 +10,12 @@
 	"allowUpdates": 1,
 	"releaseNotesStyle": "gitHistory",
 	"privacy": {
-		"summary": "Sends the song now playing (title, artist, file names, play state, times) and the FPP and plugin versions to lightshunt.com once you pair it. Nothing else leaves this device.",
+		"summary": "Once paired, sends the song, artist, file names, playlist name, play state, times and versions to lightshunt.com. It shows on your public Light Hunt display page. Nothing else leaves this device.",
 		"sends": [
 			{
 				"to": "lightshunt.com",
 				"what": "Now-playing song info, play state, times, playlist name, FPP and plugin version",
-				"why": "Show the current song on your Light Hunt display page",
+				"why": "Show the current song and playlist name on your public Light Hunt display page",
 				"alwaysOn": false
 			},
 			{
@@ -46,12 +46,6 @@
 		"other": "Reads FPP's local API at 127.0.0.1 (status and media tags). Sends nothing until you pair. The key file is mode 0600. The log is plugin-lighthunt-fpp-plugin.log and never holds the key. Unpair removes the key from this device; uninstalling removes the key, status file and log."
 	},
 	"versions": [
-		{
-			"minFPPVersion": "8.0",
-			"maxFPPVersion": "8.99",
-			"branch": "main",
-			"sha": ""
-		},
 		{
 			"minFPPVersion": "9.0",
 			"maxFPPVersion": "9.99",
