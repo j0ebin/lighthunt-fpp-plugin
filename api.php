@@ -28,6 +28,7 @@ function getEndpointslighthuntfppplugin()
 {
     return array(
         array('method' => 'GET', 'endpoint' => 'status', 'callback' => 'lighthuntfpppluginStatus'),
+        array('method' => 'POST', 'endpoint' => 'ensure', 'callback' => 'lighthuntfpppluginEnsure'),
         array('method' => 'POST', 'endpoint' => 'pairstart', 'callback' => 'lighthuntfpppluginPairStart'),
         array('method' => 'POST', 'endpoint' => 'paircheck', 'callback' => 'lighthuntfpppluginPairCheck'),
         array('method' => 'POST', 'endpoint' => 'unpair', 'callback' => 'lighthuntfpppluginUnpair'),
@@ -39,11 +40,6 @@ function lighthuntfpppluginStatus()
 {
     $cfg = lh_config();
     $running = lh_daemon_running();
-    if ($cfg && !$running) {
-        // Heals a poller that was never started, e.g. right after installing. Does nothing while fppd is
-        // stopped or stopping, so this page can never bring the poller back after preStop.sh.
-        lh_start_poller();
-    }
     $status = lh_read_json('status.json');
     // A status written before the current pairing describes the old key, so ignore it until the poller reports again.
     $pairedAt = $cfg && isset($cfg['pairedAt']) ? (int) strtotime($cfg['pairedAt']) : 0;
@@ -80,9 +76,24 @@ function lighthuntfpppluginStatus()
     return json($out);
 }
 
+// POST /api/plugin/lighthunt-fpp-plugin/ensure (it starts a process, so not GET)
+function lighthuntfpppluginEnsure()
+{
+    if (lh_config()) {
+        // Heals a poller that was never started, e.g. right after installing. Does nothing while fppd is
+        // stopped or stopping, so this page can never bring the poller back after preStop.sh.
+        lh_start_poller();
+    }
+    return json(array('ok' => true));
+}
+
 // POST /api/plugin/lighthunt-fpp-plugin/pairstart
 function lighthuntfpppluginPairStart()
 {
+    // Anyone on the network can reach this route, so a paired player must not be re-paired to another account.
+    if (lh_config()) {
+        return json(array('ok' => false, 'error' => 'This player is already paired. Press Unpair first.'));
+    }
     // Check before asking Light Hunt for a code: a code this player can't save is one the owner never sees.
     $cantSave = 'This player can\'t save Light Hunt\'s files. In FPP, open Status/Control, press Restart FPPD, then try again.';
     if (!is_writable(lh_data_dir())) {

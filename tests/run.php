@@ -10,9 +10,12 @@ $tmp = sys_get_temp_dir() . '/lh-test-' . getmypid();
 putenv('FPP_MEDIA_DIR=' . $tmp);
 require __DIR__ . '/../lib/lighthunt.php';
 
-use function LightHunt\{lh_build_report, lh_clock_warning, lh_daemon_running, lh_encode_report, lh_file, lh_local_deadline,
+use function LightHunt\{lh_base_url, lh_build_report, lh_config, lh_clock_warning, lh_daemon_running, lh_encode_report, lh_file, lh_local_deadline,
     lh_log_file, lh_new_state, lh_orphaned, lh_pending_deadline, lh_read_json, lh_reason_key, lh_reason_text, lh_signature,
     lh_start_poller, lh_tick, lh_data_dir, lh_write_json};
+
+// Nothing here may reach lightshunt.com, even if a check goes wrong.
+putenv('LIGHTHUNT_BASE_URL=http://127.0.0.1:1');
 
 $failures = 0;
 $checks = 0;
@@ -40,8 +43,8 @@ $r = lh_build_report(fixture('playing-sequence-and-media'));
 same($r, array(
     'source' => 'fpp', 'state' => 'playing', 'name' => 'Carol of the Bells.fseq',
     'mediaFilename' => 'Carol of the Bells.mp3', 'remaining' => 134, 'duration' => 212,
-    'showName' => 'Christmas Show', 'fppVersion' => '9.1', 'relayVersion' => LH_VERSION,
-), 'sequence and media');
+    'showName' => 'Christmas Show', 'relayVersion' => LH_VERSION,
+), 'sequence and media (the FPP version is not sent)');
 
 $r = lh_build_report(fixture('playing-sequence-and-media'), array('title' => 'Carol of the Bells', 'artist' => 'Mannheim Steamroller'));
 same($r['mediaTitle'], 'Carol of the Bells', 'tag title');
@@ -74,8 +77,7 @@ $odd['seconds_remaining'] = '-3';
 $odd['seconds_played'] = 'x';
 $r = lh_build_report($odd);
 check(!isset($r['remaining']) && !isset($r['duration']), 'bad seconds are dropped');
-$odd['version'] = '';
-check(!isset(lh_build_report($odd)['fppVersion']), 'no version when FPP gives none');
+check(strpos(lh_encode_report(lh_build_report(fixture('playing-sequence-and-media'))), 'fppVersion') === false, 'the FPP version never reaches the payload');
 
 $long = fixture('playing-sequence-and-media');
 $long['current_song'] = str_repeat('a', 500) . '.mp3';
@@ -280,6 +282,42 @@ lighthuntfpppluginUnpair();
 check(!is_file(lh_file('config.json')) && !is_file(lh_file('status.json')), 'api: unpair removes the key and status');
 same(lighthuntfpppluginStatus()['paired'], false, 'api: unpaired after unpair');
 
+/* ---------- pairstart refuses while paired; ensure is a POST that never pairs ---------- */
+
+unpair();
+$r = lighthuntfpppluginPairStart();
+check($r['ok'] === false && strpos($r['error'], 'already paired') === false, 'api: unpaired pairstart goes on to ask Light Hunt (and fails here, nothing listens)');
+check(!is_file(lh_file('pending.json')), 'api: a failed pairstart leaves no pending file');
+pair($KEY);
+same(lighthuntfpppluginPairStart(), array('ok' => false, 'error' => 'This player is already paired. Press Unpair first.'), 'api: a paired player refuses to start another pairing');
+check(!is_file(lh_file('pending.json')), 'api: the refusal writes nothing');
+same(lh_config()['key'], $KEY, 'api: the refusal keeps the existing pairing');
+touch(lh_file('stopped'));
+same(lighthuntfpppluginEnsure(), array('ok' => true), 'api: ensure answers ok');
+check(!lh_daemon_running(), 'api: ensure does not start the poller while stopped');
+unlink(lh_file('stopped'));
+unpair();
+same(lh_base_url(), 'http://127.0.0.1:1', 'the base URL comes from the environment variable');
+@unlink(lh_file('status.json'));
+file_put_contents(lh_file('base_url'), 'http://example.invalid');
+same(lh_base_url(), 'http://127.0.0.1:1', 'a base_url file is ignored');
+putenv('LIGHTHUNT_BASE_URL');
+same(lh_base_url(), 'https://lightshunt.com', 'production by default');
+putenv('LIGHTHUNT_BASE_URL=http://127.0.0.1:1');
+unlink(lh_file('base_url'));
+
+/* ---------- The log folder is found the way FPP finds it ---------- */
+
+$plain = lh_log_file();
+same($plain, $tmp . '/logs/plugin-lighthunt-fpp-plugin.log', 'log: <media>/logs without LOGDIR or settings');
+$GLOBALS['settings'] = array('logDirectory' => '/fpp/logs/');
+same(lh_log_file(), '/fpp/logs/plugin-lighthunt-fpp-plugin.log', 'log: FPP settings logDirectory');
+putenv('LOGDIR=/exported/logs');
+same(lh_log_file(), '/exported/logs/plugin-lighthunt-fpp-plugin.log', 'log: the exported LOGDIR wins');
+putenv('LOGDIR');
+unset($GLOBALS['settings']);
+same(lh_log_file(), $plain, 'log: back to <media>/logs');
+
 /* ---------- Network errors: curl errno to message ---------- */
 
 same(lh_reason_key(array('code' => 0, 'errno' => 60)), 'tls', 'errno 60 is a certificate problem');
@@ -340,6 +378,8 @@ foreach (getEndpointslighthuntfppplugin() as $e) {
 }
 same($methods['paircheck'], 'POST', 'paircheck is a POST');
 same($methods['status'], 'GET', 'status stays a GET');
+same($methods['ensure'], 'POST', 'ensure is a POST');
+same($methods['pairstart'], 'POST', 'pairstart is a POST');
 
 /* ---------- Lifecycle: nothing creates the data folder, nothing restarts the poller ---------- */
 

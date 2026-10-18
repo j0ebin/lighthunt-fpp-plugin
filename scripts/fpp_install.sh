@@ -23,11 +23,11 @@ mkdir -p "$DATA_DIR"
 # Older installs left root-owned files in it (the lock above all), so hand over the contents too.
 chown -R "$(stat -c '%u:%g' "$MEDIADIR")" "$DATA_DIR"
 [ -f "$LOG_FILE" ] && chown "$(stat -c '%u:%g' "$MEDIADIR")" "$LOG_FILE" 2>/dev/null
-chmod 0775 "$DATA_DIR" 2>/dev/null || true
+chmod 0755 "$DATA_DIR" 2>/dev/null || true
 chmod +x "$PLUGIN_DIR"/scripts/*.sh 2>/dev/null || true
 
 if [ "$WAS_RUNNING" = "1" ]; then
-    /bin/sh "$PLUGIN_DIR/scripts/start.sh" || true
+    /bin/bash "$PLUGIN_DIR/scripts/start.sh" || true
 fi
 echo "Light Hunt plugin installed. Open Status/Control > Light Hunt to pair it with your display."
 exit 0

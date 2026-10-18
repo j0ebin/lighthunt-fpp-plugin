@@ -6,9 +6,9 @@ This folder is laid out as the root of an FPP plugin repository (`lighthunt-fpp-
 
 ## Supported versions
 
-FPP 9 and 10 only. `pluginInfo.json` lists nothing else, so Plugin Manager marks FPP 8 and earlier, and FPP 11 and later, as incompatible until a new version is added. It runs on the PHP and curl that FPP ships (PHP 7.4 through 8.x), with no extra packages.
+FPP 9 and later. `pluginInfo.json` lists FPP 9.0 and up, so Plugin Manager marks FPP 8 and earlier as incompatible. It runs on the PHP and curl that FPP ships (PHP 7.4 through 8.x), with no extra packages.
 
-Tested on FPP 9.5, 10.2 and the current nightly. FPP 8 isn't supported yet.
+Tested on FPP 9.5, 10.2 and the 10.x nightly. Later versions should work but are untested. FPP 8 isn't supported yet.
 
 ## Install
 
@@ -44,15 +44,14 @@ Only after you pair. Every 5 seconds the plugin reads `http://127.0.0.1/api/fppd
   "remaining": 134,
   "duration": 212,
   "showName": "Christmas Show",
-  "fppVersion": "10.0",
-  "relayVersion": "0.2.0"
+  "relayVersion": "0.2.1"
 }
 ```
 
 - `state` is `playing`, `between` (paused, or running a script or pause) or `off`. When it is `off` or `between`, the song fields are left out.
 - `mediaTitle` and `mediaArtist` come from the audio file's tags, read once per file through FPP's own `/api/media/<file>/meta`. They are left out when the file has none.
 - `showName` is the name of the running playlist.
-- `relayVersion` is the plugin version. The pairing step sends the plugin version too, then the code check.
+- `relayVersion` is the plugin version. The pairing step sends the plugin version too, then the code check. The plugin does not send the FPP version.
 
 Everything above, the playlist name included, appears on your public Light Hunt display page. Nothing else leaves the player: no sequences, audio files, network settings, location or passwords. Light Hunt sends back only `{ "ok": true, "viewers": 3 }`.
 
@@ -64,7 +63,7 @@ On the player, the key lives in `plugindata/lighthunt-fpp-plugin/config.json` (m
 - The poller always runs as the media folder's owner (`fpp`), whether `postStart.sh` or the plugin page started it. `preStop.sh`, `fpp_uninstall.sh` and an update find it by its command line, so no copy is missed. While `fppd` is stopped the plugin page does not restart it, and the poller never creates the data folder (only `fpp_install.sh` and `start.sh` run as root do), so nothing comes back after an uninstall.
 - Failed sends retry after 5, 10, 20, 40, then 60 seconds. A `429` waits for `Retry-After`. A `401` (unpaired on Light Hunt) stops sending until you pair again.
 - `lib/lighthunt.php` (namespace `LightHunt`, so it cannot clash with FPP or other plugins) holds the mapping from FPP's status to the report (`lh_build_report`) and the poll loop (`lh_tick`).
-- `api.php` serves the page's endpoints at `/api/plugin/lighthunt-fpp-plugin/`. The browser never sees the key or the pairing secret.
+- `api.php` serves the page's endpoints at `/api/plugin/lighthunt-fpp-plugin/`. The browser never sees the key or the pairing secret. `status` is a read-only GET; `ensure` (a POST the page calls when it opens) starts the poller if the player is paired and fppd is running; `pairstart` is refused while the player is already paired, so press Unpair first.
 - `status.php`, `about.php` and `menu.inc` are the pages.
 
 ## Tests
@@ -78,7 +77,7 @@ docker run --rm -v "$PWD":/p php:8.4-cli sh -c 'cd /p && php tests/run.php'
 
 `tests/fixtures/` holds `/api/fppd/status` shapes written from FPP's source (`Playlist::GetCurrentStatus`, `GetCurrentFPPDStatus`).
 
-To try it without touching lightshunt.com, write a base URL into `plugindata/lighthunt-fpp-plugin/base_url` (for example `http://192.168.1.20:3055`) and point it at a local stand-in server. Delete the file to go back to lightshunt.com.
+To try it without touching lightshunt.com, set the `LIGHTHUNT_BASE_URL` environment variable (for example `LIGHTHUNT_BASE_URL=http://192.168.1.20:3055 php lighthunt-daemon.php`) and point it at a local stand-in server. The poller and the plugin pages only read it from their own environment, so it is for development, not for a running player.
 
 ## License
 

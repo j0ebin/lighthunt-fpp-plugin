@@ -11,7 +11,7 @@
 namespace LightHunt;
 
 define('LH_REPO', 'lighthunt-fpp-plugin');
-define('LH_VERSION', '0.2.0');
+define('LH_VERSION', '0.2.1');
 define('LH_KEY_RE', '/^lhr_[A-Za-z0-9_-]{43}$/');
 define('LH_HEARTBEAT_SECONDS', 30);
 define('LH_POLL_SECONDS', 5);
@@ -26,10 +26,22 @@ function lh_media_dir()
     return $env ? rtrim($env, '/') : dirname(__DIR__, 3);
 }
 
+/** FPP's log folder, found the way FPP finds it: the LOGDIR it exports, then its settings, then <media>/logs. */
+function lh_log_dir()
+{
+    $env = getenv('LOGDIR');
+    if ($env) {
+        return rtrim($env, '/');
+    }
+    if (!empty($GLOBALS['settings']['logDirectory'])) {
+        return rtrim($GLOBALS['settings']['logDirectory'], '/');
+    }
+    return lh_media_dir() . '/logs';
+}
+
 function lh_log_file()
 {
-    $env = getenv('FPP_LOG_DIR');
-    return ($env ? rtrim($env, '/') : lh_media_dir() . '/logs') . '/plugin-' . LH_REPO . '.log';
+    return lh_log_dir() . '/plugin-' . LH_REPO . '.log';
 }
 
 /**
@@ -74,15 +86,11 @@ function lh_write_json($name, $data, $mode = 0600)
     return @rename($tmp, $path);
 }
 
+/** Developers can point the plugin at a local Light Hunt server with the LIGHTHUNT_BASE_URL environment variable. */
 function lh_base_url()
 {
     $env = getenv('LIGHTHUNT_BASE_URL');
-    if ($env) {
-        return rtrim($env, '/');
-    }
-    // Developer override for testing against a local Light Hunt server.
-    $file = @file_get_contents(lh_file('base_url'));
-    return $file ? rtrim(trim($file), '/') : 'https://lightshunt.com';
+    return $env ? rtrim($env, '/') : 'https://lightshunt.com';
 }
 
 function lh_fpp_url()
@@ -295,9 +303,6 @@ function lh_build_report($st, $tags = null)
     if ($state !== 'off' && $playlist !== '') {
         $report['showName'] = lh_clip($playlist);
     }
-    if (!empty($st['version'])) {
-        $report['fppVersion'] = lh_clip($st['version']);
-    }
     $report['relayVersion'] = LH_VERSION;
     return $report;
 }
@@ -489,7 +494,7 @@ function lh_start_poller()
     if (lh_daemon_running() || is_file(lh_file('stopped')) || !is_dir(lh_data_dir()) || lh_fpp_status() === null) {
         return;
     }
-    exec('/bin/sh ' . escapeshellarg(dirname(__DIR__) . '/scripts/start.sh') . ' >/dev/null 2>&1 &');
+    exec('/bin/bash ' . escapeshellarg(dirname(__DIR__) . '/scripts/start.sh') . ' >/dev/null 2>&1 &');
 }
 
 function lh_pair_url($code)

@@ -125,11 +125,16 @@
     return call('GET', 'status').then(render).catch(function () { fail('Could not read the plugin status.'); });
   }
 
+  // Starts the poller if it is not running (a GET never does). The server skips it while Falcon Player is stopped.
+  function ensure() {
+    return call('POST', 'ensure').catch(function () {}).then(refresh);
+  }
+
   function checkPair() {
     call('POST', 'paircheck').then(function (r) {
       if (r.status === 'expired') { fail('That code expired. Get a new one.'); }
       netWarn = r.warning || '';
-      refresh();
+      if (r.status === 'paired') { ensure(); } else { refresh(); }
     }).catch(function () { refresh(); });
   }
 
@@ -144,9 +149,9 @@
 
   $('lh-unpair').addEventListener('click', function () {
     if (!confirm('Remove the Light Hunt pairing from this Falcon Player?')) { return; }
-    call('POST', 'unpair').then(function () { fail(''); refresh(); });
+    call('POST', 'unpair').then(function () { fail(''); refresh(); }).catch(function () { fail('Could not unpair. Try again.'); });
   });
 
-  refresh();
+  ensure();
 })();
 </script>

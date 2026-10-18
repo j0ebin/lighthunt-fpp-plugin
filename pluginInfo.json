@@ -2,7 +2,7 @@
 	"repoName": "lighthunt-fpp-plugin",
 	"name": "Light Hunt - Now Playing",
 	"author": "Light Hunt (lightshunt.com)",
-	"description": "Shows the song Falcon Player is playing on your display page at lightshunt.com. After you pair it with a code, a small background process reads FPP's local status every 5 seconds and sends the current song (title and artist tags, audio file name, sequence name, play state, seconds played and left, playlist name) plus the FPP and plugin versions to lightshunt.com. Nothing else leaves this device and the plugin never controls your show.",
+	"description": "Shows the song Falcon Player is playing on your display page at lightshunt.com. After you pair it with a code, a small background process reads FPP's local status every 5 seconds and sends the current song (title and artist tags, audio file name, sequence name, play state, time remaining and total length, playlist name) plus the plugin version to lightshunt.com. Nothing else leaves this device and the plugin never controls your show.",
 	"homeURL": "https://github.com/j0ebin/lighthunt-fpp-plugin",
 	"srcURL": "https://github.com/j0ebin/lighthunt-fpp-plugin.git",
 	"bugURL": "https://github.com/j0ebin/lighthunt-fpp-plugin/issues",
@@ -10,18 +10,18 @@
 	"allowUpdates": 1,
 	"releaseNotesStyle": "gitHistory",
 	"privacy": {
-		"summary": "Once paired, sends the song, artist, file names, playlist name, play state, times and versions to lightshunt.com. It shows on your public Light Hunt display page. Nothing else leaves this device.",
+		"summary": "Once paired, sends the song now playing, its artist and time left, and the playlist name to lightshunt.com. This appears on your public Light Hunt display page.",
 		"sends": [
 			{
 				"to": "lightshunt.com",
-				"what": "Now-playing song info, play state, times, playlist name, FPP and plugin version",
-				"why": "Show the current song and playlist name on your public Light Hunt display page",
+				"what": "pairing key, song title and artist, file names, play state, time left, playlist name, plugin version",
+				"why": "to show what is playing on your public Light Hunt display page",
 				"alwaysOn": false
 			},
 			{
 				"to": "lightshunt.com",
-				"what": "Pairing request with the plugin version, then a pairing code check",
-				"why": "Link this FPP to your Light Hunt display",
+				"what": "plugin version, then the pairing code and a device secret to check it",
+				"why": "to link this player to your Light Hunt display",
 				"alwaysOn": false
 			}
 		],
@@ -31,7 +31,35 @@
 				"about": "operator",
 				"keptDays": null,
 				"canDelete": true,
-				"where": "/home/fpp/media/plugindata/lighthunt-fpp-plugin"
+				"where": "plugindata/lighthunt-fpp-plugin/config.json"
+			},
+			{
+				"what": "pairing code and device secret, while pairing",
+				"about": "operator",
+				"keptDays": null,
+				"canDelete": true,
+				"where": "plugindata/lighthunt-fpp-plugin/pending.json"
+			},
+			{
+				"what": "song now playing and send status, for the plugin page",
+				"about": "operator",
+				"keptDays": null,
+				"canDelete": true,
+				"where": "plugindata/lighthunt-fpp-plugin/status.json"
+			},
+			{
+				"what": "process ID of the running poller",
+				"about": "operator",
+				"keptDays": null,
+				"canDelete": false,
+				"where": "plugindata/lighthunt-fpp-plugin/daemon.lock"
+			},
+			{
+				"what": "log of pairing, unpairing and failed sends, never the key",
+				"about": "operator",
+				"keptDays": null,
+				"canDelete": false,
+				"where": "plugin log"
 			}
 		],
 		"sensors": [],
@@ -43,7 +71,7 @@
 			}
 		],
 		"closedCode": false,
-		"other": "Reads FPP's local API at 127.0.0.1 (status and media tags). Sends nothing until you pair. The key file is mode 0600. The log is plugin-lighthunt-fpp-plugin.log and never holds the key. Unpair removes the key from this device; uninstalling removes the key, status file and log."
+		"other": "Like FPP's own pages, the plugin's web routes ask for no password: anyone who can open this FPP's web pages can start pairing or unpair it and can see the paired display's name. Pairing is refused while already paired. Reads FPP's local API at 127.0.0.1 (status and media tags). Sends nothing until you pair. The key file is mode 0600. Unpair removes the key from this device; uninstalling removes the key, status file and log."
 	},
 	"versions": [
 		{
@@ -54,7 +82,7 @@
 		},
 		{
 			"minFPPVersion": "10.0",
-			"maxFPPVersion": "10.99",
+			"maxFPPVersion": "0",
 			"branch": "main",
 			"sha": ""
 		}
