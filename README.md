@@ -10,6 +10,8 @@ FPP 9 and later. `pluginInfo.json` lists FPP 9.0 and up, so Plugin Manager marks
 
 Tested on FPP 9.5, 10.2 and the 10.x nightly. Later versions should work but are untested. FPP 8 isn't supported yet.
 
+FPP 9 installs follow the `fpp9` branch, which only gets commits tested on FPP 9, so pressing **Update** on FPP 9 never pulls in a change made for FPP 10. FPP 10 and later follow `main`.
+
 ## Install
 
 1. In FPP, open **Content Setup > Plugin Manager**.
