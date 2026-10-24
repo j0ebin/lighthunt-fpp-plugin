@@ -44,7 +44,7 @@ Only after you pair. Every 5 seconds the plugin reads `http://127.0.0.1/api/fppd
   "remaining": 134,
   "duration": 212,
   "showName": "Christmas Show",
-  "relayVersion": "0.2.1"
+  "relayVersion": "0.2.2"
 }
 ```
 

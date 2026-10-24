@@ -4,18 +4,19 @@
  * Runs on the PHP that ships with Falcon Player 9 and 10 (PHP 7.4 through 8.x), so it avoids
  * newer syntax: no str_starts_with, match, named arguments or nullsafe operators.
  *
- * Everything is in the LightHunt namespace, because FPP loads api.php into the same PHP process as
- * its own code and every other plugin. The constants below stay global (define() with a plain name).
+ * Everything is in the LightHunt namespace, constants included, because FPP loads api.php into the
+ * same PHP process as its own code and every other plugin. define() would make a global constant
+ * even here, so these use const. Callers import them with `use const LightHunt\LH_...;`.
  */
 
 namespace LightHunt;
 
-define('LH_REPO', 'lighthunt-fpp-plugin');
-define('LH_VERSION', '0.2.1');
-define('LH_KEY_RE', '/^lhr_[A-Za-z0-9_-]{43}$/');
-define('LH_HEARTBEAT_SECONDS', 30);
-define('LH_POLL_SECONDS', 5);
-define('LH_BACKOFF', [5, 10, 20, 40, 60]);
+const LH_REPO = 'lighthunt-fpp-plugin';
+const LH_VERSION = '0.2.2';
+const LH_KEY_RE = '/^lhr_[A-Za-z0-9_-]{43}$/';
+const LH_HEARTBEAT_SECONDS = 30;
+const LH_POLL_SECONDS = 5;
+const LH_BACKOFF = [5, 10, 20, 40, 60];
 
 /* ---------- Paths, files, log ---------- */
 

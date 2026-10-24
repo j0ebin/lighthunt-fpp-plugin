@@ -13,6 +13,7 @@ require __DIR__ . '/../lib/lighthunt.php';
 use function LightHunt\{lh_base_url, lh_build_report, lh_config, lh_clock_warning, lh_daemon_running, lh_encode_report, lh_file, lh_local_deadline,
     lh_log_file, lh_new_state, lh_orphaned, lh_pending_deadline, lh_read_json, lh_reason_key, lh_reason_text, lh_signature,
     lh_start_poller, lh_tick, lh_data_dir, lh_write_json};
+use const LightHunt\LH_VERSION;
 
 // Nothing here may reach lightshunt.com, even if a check goes wrong.
 putenv('LIGHTHUNT_BASE_URL=http://127.0.0.1:1');
@@ -35,6 +36,13 @@ function same($actual, $expected, $label)
 function fixture($name)
 {
     return json_decode(file_get_contents(__DIR__ . '/fixtures/' . $name . '.json'), true);
+}
+
+/* ---------- Constants live in the namespace, never global (fpp-data#293 review, item 2) ---------- */
+
+foreach (array('LH_REPO', 'LH_VERSION', 'LH_KEY_RE', 'LH_HEARTBEAT_SECONDS', 'LH_POLL_SECONDS', 'LH_BACKOFF') as $name) {
+    check(!defined($name), "$name is not a global constant");
+    check(defined('LightHunt\\' . $name), "LightHunt\\$name is defined");
 }
 
 /* ---------- lh_build_report: the field mapping ---------- */

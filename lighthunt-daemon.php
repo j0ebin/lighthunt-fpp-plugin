@@ -14,6 +14,8 @@ use function LightHunt\lh_log;
 use function LightHunt\lh_new_state;
 use function LightHunt\lh_orphaned;
 use function LightHunt\lh_tick;
+use const LightHunt\LH_POLL_SECONDS;
+use const LightHunt\LH_VERSION;
 
 if (PHP_SAPI !== 'cli') {
     exit(1);

@@ -22,6 +22,8 @@ use function LightHunt\lh_reason_key;
 use function LightHunt\lh_reason_text;
 use function LightHunt\lh_start_poller;
 use function LightHunt\lh_write_json;
+use const LightHunt\LH_KEY_RE;
+use const LightHunt\LH_VERSION;
 
 // FPP looks up the endpoint list and the callbacks below by these exact global names.
 function getEndpointslighthuntfppplugin()
