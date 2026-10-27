@@ -12,11 +12,15 @@
 namespace LightHunt;
 
 const LH_REPO = 'lighthunt-fpp-plugin';
-const LH_VERSION = '0.2.2';
+const LH_VERSION = '0.3.0';
 const LH_KEY_RE = '/^lhr_[A-Za-z0-9_-]{43}$/';
 const LH_HEARTBEAT_SECONDS = 30;
 const LH_POLL_SECONDS = 5;
 const LH_BACKOFF = [5, 10, 20, 40, 60];
+const LH_FEEDBACK_MIN = 5;
+const LH_FEEDBACK_MAX = 2000;
+const LH_LOG_LINES = 20;
+const LH_LOG_MAX = 8000;
 
 /* ---------- Paths, files, log ---------- */
 
@@ -218,6 +222,115 @@ function lh_post_json($path, $payload, $key = null)
     return lh_http('POST', lh_base_url() . $path, $headers, is_string($payload) ? $payload : json_encode($payload), 8);
 }
 
+/* ---------- Feedback: sent only when the owner presses Send ---------- */
+
+/** Characters, not bytes. */
+function lh_text_length($text)
+{
+    return function_exists('mb_strlen') ? mb_strlen($text, 'UTF-8') : (int) preg_match_all('/./su', $text);
+}
+
+/** Removes what a log line could use to identify the owner: pairing keys, home folder names, IPv4 addresses. Idempotent. */
+function lh_redact_log($text)
+{
+    $text = preg_replace('/lhr_[A-Za-z0-9_-]+/', '<key>', (string) $text);
+    $text = preg_replace('#/home/[^/\s]+#', '/home/<user>', $text);
+    $text = preg_replace('#([A-Za-z]:[\\\\/]Users[\\\\/])[^\\\\/\s]+#i', '$1<user>', $text);
+    return preg_replace('/\b(?:\d{1,3}\.){3}\d{1,3}\b/', '<ip>', $text);
+}
+
+/** The last lines of a log file as one string, or null when it is missing, unreadable (the web user may not own it) or empty. */
+function lh_log_tail($path, $lines = LH_LOG_LINES)
+{
+    $size = is_file($path) && is_readable($path) ? @filesize($path) : false;
+    $fh = $size === false ? false : @fopen($path, 'r');
+    if (!$fh) {
+        return null;
+    }
+    $cut = $size > 65536;
+    if ($cut) {
+        fseek($fh, -65536, SEEK_END);
+    }
+    $raw = stream_get_contents($fh);
+    fclose($fh);
+    $all = $raw === false ? array() : preg_split('/\r?\n/', rtrim($raw));
+    if ($cut) {
+        array_shift($all); // the first line may be cut in half
+    }
+    $all = array_slice($all, -$lines);
+    $text = implode("\n", $all);
+    return trim($text) === '' ? null : $text;
+}
+
+/** What this player knows about itself. Only the owner's Send button ever puts it on the wire. */
+function lh_feedback_context()
+{
+    $status = lh_read_json('status.json');
+    $fpp = lh_fpp_status();
+    $ctx = array('pluginVersion' => LH_VERSION, 'phpVersion' => PHP_VERSION, 'paired' => (bool) lh_config());
+    if ($fpp) {
+        $ctx['fppVersion'] = isset($fpp['version']) ? $fpp['version'] : null;
+        $ctx['fppBranch'] = isset($fpp['branch']) ? $fpp['branch'] : null;
+    }
+    if ($status) {
+        $ctx['lastResult'] = isset($status['result']) ? $status['result'] : null;
+        $ctx['lastReason'] = isset($status['reason']) ? $status['reason'] : null;
+        $ctx['lastReportAt'] = !empty($status['lastReportAt']) ? gmdate('c', (int) $status['lastReportAt']) : null;
+    }
+    $tail = lh_log_tail(lh_log_file());
+    if ($tail !== null) {
+        $ctx['log'] = $tail;
+    }
+    return $ctx;
+}
+
+/**
+ * The body for POST /api/feedback/report. Pure. Only the keys Light Hunt accepts for source "fpp" get through,
+ * values are clipped, and the log (only when $includeLog) is redacted again and cut to its last 8000 characters.
+ * The pairing key is never part of it: it travels as the Authorization header.
+ */
+function lh_build_feedback($message, $email, $context, $includeLog)
+{
+    $ctx = array();
+    foreach (array('pluginVersion', 'fppVersion', 'fppBranch', 'phpVersion', 'lastResult', 'lastReason', 'lastReportAt', 'paired') as $k) {
+        if (!isset($context[$k]) || $context[$k] === '') {
+            continue;
+        }
+        $ctx[$k] = (is_bool($context[$k]) || is_int($context[$k])) ? $context[$k] : lh_clip($context[$k]);
+    }
+    if ($includeLog && isset($context['log']) && is_string($context['log'])) {
+        $log = lh_redact_log($context['log']);
+        if (strlen($log) > LH_LOG_MAX) {
+            $log = preg_replace('/^[^\n]*\n/', '', substr($log, -LH_LOG_MAX), 1); // drop the cut-off first line
+        }
+        if (trim($log) !== '') {
+            $ctx['log'] = $log;
+        }
+    }
+    $out = array('source' => 'fpp', 'message' => lh_clip(trim((string) $message), LH_FEEDBACK_MAX));
+    $email = trim((string) $email);
+    if ($email !== '') {
+        $out['email'] = lh_clip($email, 254);
+    }
+    $out['context'] = $ctx;
+    return $out;
+}
+
+/** The owner-facing result of a /api/feedback/report call. */
+function lh_feedback_result($r)
+{
+    if ($r['code'] === 200) {
+        return array('ok' => true);
+    }
+    if ($r['code'] === 429) {
+        return array('ok' => false, 'reason' => 'Too many reports, try again later.');
+    }
+    if (isset($r['json']['code']) && $r['json']['code'] === 'invalid_email') {
+        return array('ok' => false, 'reason' => 'Light Hunt did not accept that email address.');
+    }
+    return array('ok' => false, 'reason' => lh_reason_text(lh_reason_key($r), time()));
+}
+
 /* ---------- Falcon Player ---------- */
 
 /** FPP's local status, or null when fppd is not answering. */
@@ -239,13 +352,13 @@ function lh_fpp_tags($file)
     );
 }
 
-function lh_clip($value)
+function lh_clip($value, $max = 200)
 {
     $value = (string) $value;
-    if (preg_match('/^.{0,200}/su', $value, $m)) {
+    if (preg_match('/^.{0,' . (int) $max . '}/su', $value, $m)) {
         return $m[0];
     }
-    return substr($value, 0, 200); // not valid UTF-8; the server strips what it cannot read
+    return substr($value, 0, (int) $max); // not valid UTF-8; the server strips what it cannot read
 }
 
 function lh_seconds($value)

@@ -10,7 +10,7 @@ $tmp = sys_get_temp_dir() . '/lh-test-' . getmypid();
 putenv('FPP_MEDIA_DIR=' . $tmp);
 require __DIR__ . '/../lib/lighthunt.php';
 
-use function LightHunt\{lh_base_url, lh_build_report, lh_config, lh_clock_warning, lh_daemon_running, lh_encode_report, lh_file, lh_local_deadline,
+use function LightHunt\{lh_base_url, lh_build_feedback, lh_build_report, lh_feedback_result, lh_log_tail, lh_redact_log, lh_config, lh_clock_warning, lh_daemon_running, lh_encode_report, lh_file, lh_local_deadline,
     lh_log_file, lh_new_state, lh_orphaned, lh_pending_deadline, lh_read_json, lh_reason_key, lh_reason_text, lh_signature,
     lh_start_poller, lh_tick, lh_data_dir, lh_write_json};
 use const LightHunt\LH_VERSION;
@@ -85,7 +85,7 @@ $odd['seconds_remaining'] = '-3';
 $odd['seconds_played'] = 'x';
 $r = lh_build_report($odd);
 check(!isset($r['remaining']) && !isset($r['duration']), 'bad seconds are dropped');
-check(strpos(lh_encode_report(lh_build_report(fixture('playing-sequence-and-media'))), 'fppVersion') === false, 'the FPP version never reaches the payload');
+check(strpos(lh_encode_report(lh_build_report(fixture('playing-sequence-and-media'))), 'fppVersion') === false, 'the FPP version never reaches the now-playing payload (feedback sends it, only on Send)');
 
 $long = fixture('playing-sequence-and-media');
 $long['current_song'] = str_repeat('a', 500) . '.mp3';
@@ -388,6 +388,145 @@ same($methods['paircheck'], 'POST', 'paircheck is a POST');
 same($methods['status'], 'GET', 'status stays a GET');
 same($methods['ensure'], 'POST', 'ensure is a POST');
 same($methods['pairstart'], 'POST', 'pairstart is a POST');
+
+/* ---------- Feedback: sent only on Send, redacted, never carries the key ---------- */
+
+same($methods['feedbackpreview'], 'GET', 'feedbackpreview is a GET');
+same($methods['feedback'], 'POST', 'feedback is a POST');
+
+same(lh_redact_log('key lhr_' . str_repeat('k', 43) . ' used'), 'key <key> used', 'redact: pairing key');
+same(lh_redact_log('lhr_abc-DEF_123'), '<key>', 'redact: short lhr_ token too');
+same(lh_redact_log('open /home/fpp/media/x.fseq and /home/joey/y'), 'open /home/<user>/media/x.fseq and /home/<user>/y', 'redact: Linux home folders');
+same(lh_redact_log('C:\Users\Joey Smith\Docs D:/Users/ann/x'), 'C:\Users\<user> Smith\Docs D:/Users/<user>/x', 'redact: Windows home folders, any drive, either slash');
+same(lh_redact_log('from 192.168.1.24 to 8.8.8.8:53'), 'from <ip> to <ip>:53', 'redact: IPv4 addresses');
+same(lh_redact_log('Pair 1.2.3 version 10.2'), 'Pair 1.2.3 version 10.2', 'redact: version numbers stay');
+same(lh_redact_log(lh_redact_log('/home/a 1.2.3.4 lhr_x')), '/home/<user> <ip> <key>', 'redact: running it twice changes nothing');
+same(lh_redact_log("bad \xB1 byte /home/x"), "bad \xB1 byte /home/<user>", 'redact: invalid UTF-8 survives');
+
+// lh_log_tail: last 20 lines, null for missing, empty or unreadable.
+$logDir = $tmp . '/tail';
+@mkdir($logDir, 0775, true);
+$logPath = $logDir . '/t.log';
+file_put_contents($logPath, implode("\n", array_map(function ($i) { return "line $i"; }, range(1, 30))) . "\n");
+$tail = lh_log_tail($logPath);
+same(substr_count($tail, "\n") + 1, 20, 'log tail: 20 lines');
+check(strpos($tail, 'line 30') !== false && strpos($tail, 'line 10') === false && strpos($tail, 'line 11') !== false, 'log tail: the last 20, newest included');
+same(lh_log_tail($logDir . '/missing.log'), null, 'log tail: missing file is none');
+file_put_contents($logPath, "\n\n");
+same(lh_log_tail($logPath), null, 'log tail: empty file is none');
+file_put_contents($logPath, str_repeat("x\n", 100000) . "last\n");
+$tail = lh_log_tail($logPath);
+check(substr_count($tail, "\n") + 1 === 20 && substr($tail, -4) === 'last', 'log tail: a large file is read from its end');
+if (function_exists('posix_geteuid') && posix_geteuid() !== 0) {
+    file_put_contents($logPath, "secret\n");
+    chmod($logPath, 0000);
+    same(lh_log_tail($logPath), null, 'log tail: an unreadable log is left out silently');
+    chmod($logPath, 0600);
+}
+
+// lh_build_feedback: allowed keys only, clipped, log only when asked.
+$ctx = array(
+    'pluginVersion' => '0.3.0', 'fppVersion' => '10.2', 'fppBranch' => 'master', 'phpVersion' => '8.2.0',
+    'lastResult' => 'offline', 'lastReason' => 'tls', 'lastReportAt' => '2026-10-26T20:15:00+00:00', 'paired' => true,
+    'log' => "ok /home/fpp/x\nfrom 10.0.0.5 key lhr_" . str_repeat('z', 43),
+    'key' => $KEY, 'deviceSecret' => 'shh', 'displayName' => 'Elm Street',
+);
+$fb = lh_build_feedback('  The song stops.  ', '  me@example.com ', $ctx, true);
+same($fb['source'], 'fpp', 'feedback: source is fpp');
+same($fb['message'], 'The song stops.', 'feedback: message is trimmed');
+same($fb['email'], 'me@example.com', 'feedback: email is trimmed');
+same($fb['context']['fppVersion'], '10.2', 'feedback: carries the FPP version');
+same($fb['context']['paired'], true, 'feedback: paired stays a boolean');
+same($fb['context']['log'], "ok /home/<user>/x\nfrom <ip> key <key>", 'feedback: the log is redacted again on the way out');
+check(!isset($fb['context']['key']) && !isset($fb['context']['deviceSecret']) && !isset($fb['context']['displayName']), 'feedback: unknown context keys are dropped');
+check(strpos(json_encode($fb), 'lhr_') === false && strpos(json_encode($fb), 'shh') === false, 'feedback: no key or secret anywhere in the body');
+check(!isset(lh_build_feedback('hello there', '', $ctx, false)['context']['log']), 'feedback: no log unless asked');
+check(!isset(lh_build_feedback('hello there', '', $ctx, false)['email']), 'feedback: no email key when none was typed');
+same(array_keys($fb), array('source', 'message', 'email', 'context'), 'feedback: the body has exactly these keys');
+$bigLog = implode("\n", array_fill(0, 400, 'a line that is 30 chars long...'));
+$fb = lh_build_feedback('hello there', '', array('log' => $bigLog), true);
+check(strlen($fb['context']['log']) <= 8000 && substr($fb['context']['log'], -3) === '...', 'feedback: the log is cut to 8000 characters from the end');
+check(strpos($fb['context']['log'], 'a line that is 30 chars long...') === 0, 'feedback: a cut log starts on a whole line');
+same(lh_text_length_via(lh_build_feedback(str_repeat("\u{1F384}", 3000), '', array(), false)['message']), 2000, 'feedback: a long message is clipped to 2000 characters');
+function lh_text_length_via($s)
+{
+    return mb_strlen($s, 'UTF-8');
+}
+
+// Results shown to the owner.
+same(lh_feedback_result(array('code' => 200, 'json' => array('ok' => true))), array('ok' => true), 'result: 200 is ok');
+same(lh_feedback_result(array('code' => 429, 'json' => null)), array('ok' => false, 'reason' => 'Too many reports, try again later.'), 'result: 429 is friendly');
+same(lh_feedback_result(array('code' => 0, 'json' => null, 'errno' => 6))['reason'], 'Could not reach Light Hunt. Check this device has internet access.', 'result: offline');
+same(lh_feedback_result(array('code' => 503, 'json' => array('code' => 'unavailable')))['reason'], 'Light Hunt answered with an error (HTTP 503).', 'result: 503');
+check(strpos(lh_feedback_result(array('code' => 400, 'json' => array('code' => 'invalid_email')))['reason'], 'email') !== false, 'result: a refused email says so');
+
+// The endpoint: the browser sends words only; the player builds the rest.
+unpair();
+$sent = array();
+$fake = function ($path, $body, $key) use (&$sent) {
+    $sent[] = array('path' => $path, 'body' => json_decode($body, true), 'raw' => $body, 'key' => $key);
+    return array('code' => 200, 'json' => array('ok' => true, 'id' => 'x'), 'retryAfter' => null);
+};
+same(lighthuntfpppluginFeedbackSend(array('message' => 'abcd'), $fake), array('ok' => false, 'reason' => 'Write at least 5 characters.'), 'api: under 5 characters is refused');
+same(lighthuntfpppluginFeedbackSend(array('message' => '   abcd   '), $fake)['ok'], false, 'api: spaces do not count');
+same(lighthuntfpppluginFeedbackSend(array('message' => str_repeat('a', 2001)), $fake)['reason'], 'Keep it under 2000 characters.', 'api: over 2000 characters is refused');
+same(lighthuntfpppluginFeedbackSend(array('message' => 'hello there', 'email' => 'not an email'), $fake)['reason'], 'That email address does not look right.', 'api: a bad email is refused');
+same(lighthuntfpppluginFeedbackSend(array('message' => array('x')), $fake)['ok'], false, 'api: a non-string message is refused');
+same(count($sent), 0, 'api: refused feedback sends nothing');
+
+// Unpaired: anonymous, email allowed, a browser-supplied context is ignored.
+$r = lighthuntfpppluginFeedbackSend(array('message' => 'The song stops', 'email' => 'me@example.com', 'includeLog' => false,
+    'context' => array('fppVersion' => 'forged'), 'source' => 'relay'), $fake);
+same($r, array('ok' => true), 'api: feedback sent');
+same($sent[0]['path'], '/api/feedback/report', 'api: posts to /api/feedback/report');
+same($sent[0]['key'], null, 'api: unpaired sends no Authorization key');
+same($sent[0]['body']['source'], 'fpp', 'api: the source is always fpp');
+same($sent[0]['body']['email'], 'me@example.com', 'api: the typed email is sent');
+same($sent[0]['body']['context']['pluginVersion'], LH_VERSION, 'api: plugin version added by the player');
+same($sent[0]['body']['context']['paired'], false, 'api: paired flag read on the player');
+check(!isset($sent[0]['body']['context']['log']), 'api: no log when includeLog is false');
+check(strpos($sent[0]['raw'], 'forged') === false, 'api: a browser-supplied context is ignored');
+
+// Paired: the key travels as the header only, and the log is redacted and optional.
+$logHome = $tmp . '/fblogs';
+@mkdir($logHome, 0775, true);
+putenv('LOGDIR=' . $logHome);
+file_put_contents(lh_log_file(), "2026 Paired with 192.168.1.50 as /home/pi/x\nkey lhr_" . str_repeat('q', 43) . "\n");
+pair($KEY);
+lh_write_json('status.json', array('result' => 'offline', 'reason' => 'tls', 'lastReportAt' => 1760000000, 'updatedAt' => time()), 0644);
+$sent = array();
+lighthuntfpppluginFeedbackSend(array('message' => 'hello there', 'includeLog' => true), $fake);
+same($sent[0]['key'], $KEY, 'api: paired sends the key as the Authorization key');
+check(strpos($sent[0]['raw'], $KEY) === false && strpos($sent[0]['raw'], 'lhr_') === false, 'api: the key is never in the body');
+same($sent[0]['body']['context']['paired'], true, 'api: paired flag true');
+same($sent[0]['body']['context']['lastResult'], 'offline', 'api: last result from status.json');
+same($sent[0]['body']['context']['lastReason'], 'tls', 'api: last reason from status.json');
+same($sent[0]['body']['context']['lastReportAt'], gmdate('c', 1760000000), 'api: last report time is ISO 8601');
+check(strpos($sent[0]['body']['context']['log'], '192.168') === false && strpos($sent[0]['body']['context']['log'], '/home/pi') === false, 'api: the log is redacted');
+check(strpos($sent[0]['body']['context']['log'], '<ip>') !== false && strpos($sent[0]['body']['context']['log'], '<key>') !== false, 'api: the log shows the replacements');
+$sent = array();
+lighthuntfpppluginFeedbackSend(array('message' => 'hello there', 'includeLog' => 'yes'), $fake);
+check(!isset($sent[0]['body']['context']['log']), 'api: includeLog must be exactly true');
+
+// The preview is the same context, without the words, and holds no key.
+$pv = lighthuntfpppluginFeedbackPreview();
+same($pv['ok'], true, 'preview: ok');
+same($pv['context']['pluginVersion'], LH_VERSION, 'preview: shows the plugin version');
+check(isset($pv['context']['log']) && strpos($pv['context']['log'], '<ip>') !== false, 'preview: shows the redacted log');
+check(strpos(json_encode($pv), 'lhr_') === false && strpos(json_encode($pv), $KEY) === false && !isset($pv['message']), 'preview: no key and no message');
+unlink(lh_log_file());
+check(!isset(lighthuntfpppluginFeedbackPreview()['context']['log']), 'preview: no log key when there is no log');
+
+// A failed send leaves the words with the owner and says why.
+$down = function ($path, $body, $key) { return array('code' => 0, 'json' => null, 'retryAfter' => null, 'errno' => 6, 'error' => 'x', 'serverTime' => null); };
+same(lighthuntfpppluginFeedbackSend(array('message' => 'hello there'), $down), array('ok' => false, 'reason' => 'Could not reach Light Hunt. Check this device has internet access.'), 'api: a network failure is reported');
+$limited = function ($path, $body, $key) { return array('code' => 429, 'json' => array('code' => 'rate_limited'), 'retryAfter' => 60); };
+same(lighthuntfpppluginFeedbackSend(array('message' => 'hello there'), $limited)['reason'], 'Too many reports, try again later.', 'api: rate limited');
+$fblog = (string) @file_get_contents(lh_log_file());
+check(strpos($fblog, 'hello there') === false && strpos($fblog, 'lhr_') === false, 'api: the log never holds the message or a key');
+putenv('LOGDIR');
+@unlink(lh_file('status.json'));
+unpair();
 
 /* ---------- Lifecycle: nothing creates the data folder, nothing restarts the poller ---------- */
 

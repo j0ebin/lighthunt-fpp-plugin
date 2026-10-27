@@ -9,8 +9,12 @@ require_once __DIR__ . '/lib/lighthunt.php';
 use function LightHunt\lh_base_url;
 use function LightHunt\lh_clock_warning;
 use function LightHunt\lh_config;
+use function LightHunt\lh_build_feedback;
 use function LightHunt\lh_daemon_running;
 use function LightHunt\lh_data_dir;
+use function LightHunt\lh_encode_report;
+use function LightHunt\lh_feedback_context;
+use function LightHunt\lh_feedback_result;
 use function LightHunt\lh_file;
 use function LightHunt\lh_local_deadline;
 use function LightHunt\lh_log;
@@ -21,7 +25,10 @@ use function LightHunt\lh_read_json;
 use function LightHunt\lh_reason_key;
 use function LightHunt\lh_reason_text;
 use function LightHunt\lh_start_poller;
+use function LightHunt\lh_text_length;
 use function LightHunt\lh_write_json;
+use const LightHunt\LH_FEEDBACK_MAX;
+use const LightHunt\LH_FEEDBACK_MIN;
 use const LightHunt\LH_KEY_RE;
 use const LightHunt\LH_VERSION;
 
@@ -34,6 +41,8 @@ function getEndpointslighthuntfppplugin()
         array('method' => 'POST', 'endpoint' => 'pairstart', 'callback' => 'lighthuntfpppluginPairStart'),
         array('method' => 'POST', 'endpoint' => 'paircheck', 'callback' => 'lighthuntfpppluginPairCheck'),
         array('method' => 'POST', 'endpoint' => 'unpair', 'callback' => 'lighthuntfpppluginUnpair'),
+        array('method' => 'GET', 'endpoint' => 'feedbackpreview', 'callback' => 'lighthuntfpppluginFeedbackPreview'),
+        array('method' => 'POST', 'endpoint' => 'feedback', 'callback' => 'lighthuntfpppluginFeedback'),
     );
 }
 
@@ -135,7 +144,7 @@ function lighthuntfpppluginPairCheck()
         return json(array('status' => 'expired'));
     }
     // Light Hunt allows 120 checks per code per 10 minutes; stay well under it, even with several tabs open.
-    if (time() - (int) $pending['lastCheck'] < 5) {
+    if (time() - (int) (isset($pending['lastCheck']) ? $pending['lastCheck'] : 0) < 5) {
         return json(array('status' => 'pending'));
     }
     $pending['lastCheck'] = time();
@@ -174,4 +183,42 @@ function lighthuntfpppluginUnpair()
     @unlink(lh_file('status.json'));
     lh_log('Pairing key removed from this device');
     return json(array('ok' => true));
+}
+
+// GET /api/plugin/lighthunt-fpp-plugin/feedbackpreview
+// The context the feedback form would send, built the same way as the send, so the owner sees the real thing.
+function lighthuntfpppluginFeedbackPreview()
+{
+    $payload = lh_build_feedback('', '', lh_feedback_context(), true);
+    return json(array('ok' => true, 'context' => $payload['context']));
+}
+
+// POST /api/plugin/lighthunt-fpp-plugin/feedback  {message, email?, includeLog}
+function lighthuntfpppluginFeedback()
+{
+    $in = json_decode((string) file_get_contents('php://input'), true);
+    return json(lighthuntfpppluginFeedbackSend(is_array($in) ? $in : array()));
+}
+
+/** The browser supplies only the words and the log checkbox. Everything else is read here. $post is for tests. */
+function lighthuntfpppluginFeedbackSend($in, $post = null)
+{
+    $message = isset($in['message']) && is_string($in['message']) ? trim($in['message']) : '';
+    $length = lh_text_length($message);
+    if ($length < LH_FEEDBACK_MIN) {
+        return array('ok' => false, 'reason' => 'Write at least ' . LH_FEEDBACK_MIN . ' characters.');
+    }
+    if ($length > LH_FEEDBACK_MAX) {
+        return array('ok' => false, 'reason' => 'Keep it under ' . LH_FEEDBACK_MAX . ' characters.');
+    }
+    $email = isset($in['email']) && is_string($in['email']) ? trim($in['email']) : '';
+    if ($email !== '' && (strlen($email) > 254 || !filter_var($email, FILTER_VALIDATE_EMAIL))) {
+        return array('ok' => false, 'reason' => 'That email address does not look right.');
+    }
+    $cfg = lh_config();
+    $payload = lh_build_feedback($message, $email, lh_feedback_context(), isset($in['includeLog']) && $in['includeLog'] === true);
+    $r = call_user_func($post ? $post : 'LightHunt\\lh_post_json', '/api/feedback/report', lh_encode_report($payload), $cfg ? $cfg['key'] : null);
+    $result = lh_feedback_result($r);
+    lh_log($result['ok'] ? 'Feedback sent' : 'Feedback not sent (HTTP ' . (int) $r['code'] . ')');
+    return $result;
 }

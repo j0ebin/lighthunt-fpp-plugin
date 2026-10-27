@@ -2,7 +2,7 @@
 	"repoName": "lighthunt-fpp-plugin",
 	"name": "Light Hunt - Now Playing",
 	"author": "Light Hunt (lightshunt.com)",
-	"description": "Shows the song Falcon Player is playing on your display page at lightshunt.com. After you pair it with a code, a small background process reads FPP's local status every 5 seconds and sends the current song (title and artist tags, audio file name, sequence name, play state, time remaining and total length, playlist name) plus the plugin version to lightshunt.com. Nothing else leaves this device and the plugin never controls your show.",
+	"description": "Shows the song Falcon Player is playing on your display page at lightshunt.com. After you pair it with a code, a small background process reads FPP's local status every 5 seconds and sends the current song (title and artist tags, audio file name, sequence name, play state, time remaining and total length, playlist name) plus the plugin version to lightshunt.com. The only other thing it can send is feedback you write, and only when you press Send on the plugin page. Nothing else leaves this device and the plugin never controls your show.",
 	"homeURL": "https://github.com/j0ebin/lighthunt-fpp-plugin",
 	"srcURL": "https://github.com/j0ebin/lighthunt-fpp-plugin.git",
 	"bugURL": "https://github.com/j0ebin/lighthunt-fpp-plugin/issues",
@@ -22,6 +22,12 @@
 				"to": "lightshunt.com",
 				"what": "plugin version, then the pairing code and a device secret to check it",
 				"why": "to link this player to your Light Hunt display",
+				"alwaysOn": false
+			},
+			{
+				"to": "lightshunt.com",
+				"what": "your feedback message, an email address only if you type one, plugin, FPP and PHP versions, whether paired, the last send result, reason and time, the last 20 plugin log lines only if you tick the box (home folder names, IP addresses and pairing keys removed), and the pairing key as a sign-in header when paired",
+				"why": "to send feedback to Light Hunt, only when you press Send on the plugin page",
 				"alwaysOn": false
 			}
 		],
@@ -71,7 +77,7 @@
 			}
 		],
 		"closedCode": false,
-		"other": "Like FPP's own pages, the plugin's web routes ask for no password: anyone who can open this FPP's web pages can start pairing or unpair it and can see the paired display's name. Pairing is refused while already paired. Reads FPP's local API at 127.0.0.1 (status and media tags). Sends nothing until you pair. The key file is mode 0600. Unpair removes the key from this device; uninstalling removes the key, status file and log."
+		"other": "Like FPP's own pages, the plugin's web routes ask for no password: anyone who can open this FPP's web pages can start pairing or unpair it and can see the paired display's name. Pairing is refused while already paired. Reads FPP's local API at 127.0.0.1 (status and media tags). Sends nothing until you pair, apart from feedback you press Send on. The key file is mode 0600. Unpair removes the key from this device; uninstalling removes the key, status file and log."
 	},
 	"versions": [
 		{

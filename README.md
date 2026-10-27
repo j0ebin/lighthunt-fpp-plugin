@@ -15,7 +15,7 @@ FPP 9 installs follow the `fpp9` branch, which only gets commits tested on FPP 9
 ## Install
 
 1. In FPP, open **Content Setup > Plugin Manager**.
-2. Find **Light Hunt - Now Playing** and select **Install**. (Until it is listed there, paste this into the plugin URL box: `https://raw.githubusercontent.com/j0ebin/lighthunt-fpp-plugin/main/pluginInfo.json`.)
+2. Find **Light Hunt - Now Playing** and select **Install**.
 3. Open **Status/Control > Light Hunt**.
 
 ## Pair
@@ -46,16 +46,44 @@ Only after you pair. Every 5 seconds the plugin reads `http://127.0.0.1/api/fppd
   "remaining": 134,
   "duration": 212,
   "showName": "Christmas Show",
-  "relayVersion": "0.2.2"
+  "relayVersion": "0.3.0"
 }
 ```
 
 - `state` is `playing`, `between` (paused, or running a script or pause) or `off`. When it is `off` or `between`, the song fields are left out.
 - `mediaTitle` and `mediaArtist` come from the audio file's tags, read once per file through FPP's own `/api/media/<file>/meta`. They are left out when the file has none.
 - `showName` is the name of the running playlist.
-- `relayVersion` is the plugin version. The pairing step sends the plugin version too, then the code check. The plugin does not send the FPP version.
+- `relayVersion` is the plugin version. The pairing step sends the plugin version too, then the code check. The now-playing report does not include the FPP version.
 
 Everything above, the playlist name included, appears on your public Light Hunt display page. Nothing else leaves the player: no sequences, audio files, network settings, location or passwords. Light Hunt sends back only `{ "ok": true, "viewers": 3 }`.
+
+### Feedback
+
+The **Send feedback** card on the plugin page posts to `https://lightshunt.com/api/feedback/report`, **only when you press Send**. Pairing is not needed. The body is built on the player, never by the browser:
+
+```json
+{
+  "source": "fpp",
+  "message": "What you typed",
+  "email": "only if you typed one",
+  "context": {
+    "pluginVersion": "0.3.0",
+    "fppVersion": "10.2",
+    "fppBranch": "master",
+    "phpVersion": "8.2.12",
+    "lastResult": "ok",
+    "lastReason": "only when a send failed",
+    "lastReportAt": "2026-10-26T20:15:00+00:00",
+    "paired": true,
+    "log": "only if you tick Include recent log lines"
+  }
+}
+```
+
+- This is where the FPP version and branch are sent. The now-playing report never includes them.
+- `log` is the last 20 lines of the plugin log, redacted before sending: home folder names become `<user>` (`/home/<name>`, `C:\Users\<name>`), IPv4 addresses become `<ip>`, `lhr_` keys become `<key>`. It is left out unless you tick the box, and **Show what's sent** shows it first. If the web user cannot read the log, it is left out silently.
+- When paired, the pairing key goes in the `Authorization` header (not the body) so Light Hunt can tell which display wrote. When not paired, the card asks for an optional email for a reply.
+- The server rejects messages under 5 or over 2000 characters, and limits reports per hour; the card shows "Too many reports, try again later."
 
 On the player, the key lives in `plugindata/lighthunt-fpp-plugin/config.json` (mode 0600). The one log is `plugin-lighthunt-fpp-plugin.log`; it never holds the key.
 
