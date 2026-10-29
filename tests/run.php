@@ -12,7 +12,7 @@ require __DIR__ . '/../lib/lighthunt.php';
 
 use function LightHunt\{lh_base_url, lh_build_feedback, lh_build_report, lh_feedback_result, lh_log_tail, lh_redact_log, lh_config, lh_clock_warning, lh_daemon_running, lh_encode_report, lh_file, lh_local_deadline,
     lh_log_file, lh_new_state, lh_orphaned, lh_pending_deadline, lh_read_json, lh_reason_key, lh_reason_text, lh_signature,
-    lh_start_poller, lh_tick, lh_data_dir, lh_write_json};
+    lh_start_poller, lh_tick, lh_data_dir, lh_write_json, lh_next_items};
 use const LightHunt\LH_VERSION;
 
 // Nothing here may reach lightshunt.com, even if a check goes wrong.
@@ -258,6 +258,85 @@ function json($data)
 {
     return $data; // FPP's json() helper writes a response; the tests just want the array
 }
+/* ---------- lh_next_items: what plays after the current song ---------- */
+
+function pl_entry($type, $seq = null, $media = null)
+{
+    $e = array('type' => $type, 'enabled' => 1);
+    if ($seq !== null) $e['sequenceName'] = $seq;
+    if ($media !== null) $e['mediaName'] = $media;
+    return $e;
+}
+function pl_status($index, $count, $repeat = 0, $random = 0)
+{
+    return array('current_playlist' => array('playlist' => 'Show', 'index' => (string) $index, 'count' => (string) $count),
+        'repeat_mode' => $repeat, 'random' => $random);
+}
+$showPl = array(
+    'leadIn' => array(pl_entry('both', 'Intro.fseq', 'Intro.mp3')),
+    'mainPlaylist' => array(
+        pl_entry('both', 'Carol of the Bells.fseq', 'Carol of the Bells.mp3'),
+        pl_entry('pause'),
+        pl_entry('sequence', 'Tree Twinkle.fseq'),
+        pl_entry('media', null, 'Sleigh Ride.mp3'),
+        pl_entry('command'),
+        pl_entry('both', 'Feliz Navidad.fseq', 'Feliz Navidad.mp3'),
+    ),
+    'leadOut' => array(pl_entry('both', 'Goodnight.fseq', 'Goodnight.mp3')),
+);
+// Index 2 = first main song (1-based across lead-in, main, lead-out). Skips the pause and the command.
+same(lh_next_items(pl_status(2, 8), $showPl), array(
+    array('name' => 'Tree Twinkle.fseq'),
+    array('mediaFilename' => 'Sleigh Ride.mp3'),
+    array('name' => 'Feliz Navidad.fseq', 'mediaFilename' => 'Feliz Navidad.mp3'),
+), 'next three songs, non-songs skipped');
+// Last main song, no repeat: the lead-out comes next.
+same(lh_next_items(pl_status(7, 8), $showPl), array(array('name' => 'Goodnight.fseq', 'mediaFilename' => 'Goodnight.mp3')), 'no repeat runs into the lead-out');
+// Last main song, repeating: back to the top of the main section, never the lead-in or lead-out.
+same(lh_next_items(pl_status(7, 8, 1), $showPl), array(
+    array('name' => 'Carol of the Bells.fseq', 'mediaFilename' => 'Carol of the Bells.mp3'),
+    array('name' => 'Tree Twinkle.fseq'),
+    array('mediaFilename' => 'Sleigh Ride.mp3'),
+), 'repeat loops the main section');
+// Lead-in: the main section follows.
+same(lh_next_items(pl_status(1, 8), $showPl)[0], array('name' => 'Carol of the Bells.fseq', 'mediaFilename' => 'Carol of the Bells.mp3'), 'lead-in leads to main');
+// In the lead-out: only what is left of it; nothing after the last item.
+same(lh_next_items(pl_status(8, 8, 1), $showPl), array(), 'last lead-out item has nothing next');
+// Shuffled: FPP picks the next song live, so say nothing.
+same(lh_next_items(pl_status(2, 8, 0, 1), $showPl), array(), 'shuffled playlist has no up next');
+// The playlist on disk no longer matches what FPP is running: say nothing rather than guess.
+same(lh_next_items(pl_status(2, 9), $showPl), array(), 'count mismatch has no up next');
+same(lh_next_items(pl_status(0, 8), $showPl), array(), 'idle position has no up next');
+same(lh_next_items(pl_status(2, 8), null), array(), 'unreadable playlist has no up next');
+// A repeating playlist whose main section has no songs must not loop forever.
+same(lh_next_items(pl_status(1, 2, 1), array('mainPlaylist' => array(pl_entry('pause'), pl_entry('command')))), array(), 'no songs, no loop');
+
+// The poller adds up next with tags, and reads the playlist at most once a minute.
+pair($KEY);
+@unlink(lh_file('status.json'));
+$posts = array();
+list($cur, $io) = harness('playing-sequence-and-media', $posts, $ok);
+$plCalls = 0;
+$io['playlist'] = function ($name) use (&$plCalls) {
+    $plCalls++;
+    return array('mainPlaylist' => array_merge(
+        array(pl_entry('both', 'Carol of the Bells.fseq', 'Carol of the Bells.mp3')),
+        array_fill(0, 11, pl_entry('both', 'Next Song.fseq', 'Next Song.mp3'))
+    ));
+};
+$S = lh_new_state();
+lh_tick($S, 7000, $io);
+$sent = end($posts)['body'];
+same(isset($sent['upNext']) ? count($sent['upNext']) : 0, 3, 'report carries three up-next songs');
+same($sent['upNext'][0]['mediaTitle'], 'Tagged', 'up-next song carries its title tag');
+same($sent['upNext'][0]['mediaArtist'], 'Artist', 'up-next song carries its artist tag');
+lh_tick($S, 7005, $io);
+lh_tick($S, 7030, $io);
+same($plCalls, 1, 'playlist read once within a minute');
+lh_tick($S, 7061, $io);
+same($plCalls, 2, 'playlist read again after a minute');
+unpair();
+
 require __DIR__ . '/../api.php';
 
 unpair();

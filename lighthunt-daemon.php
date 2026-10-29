@@ -43,6 +43,7 @@ lh_log('Light Hunt poller started (plugin ' . LH_VERSION . ')');
 $io = array(
     'status' => 'LightHunt\\lh_fpp_status',
     'tags' => 'LightHunt\\lh_fpp_tags',
+    'playlist' => 'LightHunt\\lh_fpp_playlist',
     'post' => function ($key, $json) {
         return \LightHunt\lh_post_json('/api/now-playing', $json, $key);
     },

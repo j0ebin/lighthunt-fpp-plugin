@@ -46,13 +46,17 @@ Only after you pair. Every 5 seconds the plugin reads `http://127.0.0.1/api/fppd
   "remaining": 134,
   "duration": 212,
   "showName": "Christmas Show",
-  "relayVersion": "0.3.0"
+  "upNext": [
+    { "name": "Wizards in Winter.fseq", "mediaFilename": "Wizards in Winter.mp3", "mediaTitle": "Wizards in Winter", "mediaArtist": "Trans-Siberian Orchestra" }
+  ],
+  "relayVersion": "0.4.0"
 }
 ```
 
 - `state` is `playing`, `between` (paused, or running a script or pause) or `off`. When it is `off` or `between`, the song fields are left out.
 - `mediaTitle` and `mediaArtist` come from the audio file's tags, read once per file through FPP's own `/api/media/<file>/meta`. They are left out when the file has none.
 - `showName` is the name of the running playlist.
+- `upNext` lists up to 3 songs that come next in that playlist, read from FPP's own `/api/playlist/<name>?mergeSubs=1` at most once a minute. Each has the sequence and/or audio file name and, when the audio file has them, its title and artist tags. It walks forward from FPP's current position, skips pauses, scripts and commands, loops the main section when the playlist repeats, and is left out for shuffled playlists or when the playlist on disk doesn't match what FPP is running.
 - `relayVersion` is the plugin version. The pairing step sends the plugin version too, then the code check. The now-playing report does not include the FPP version.
 
 Everything above, the playlist name included, appears on your public Light Hunt display page. Nothing else leaves the player: no sequences, audio files, network settings, location or passwords. Light Hunt sends back only `{ "ok": true, "viewers": 3 }`.
@@ -67,7 +71,7 @@ The **Send feedback** card on the plugin page posts to `https://lightshunt.com/a
   "message": "What you typed",
   "email": "only if you typed one",
   "context": {
-    "pluginVersion": "0.3.0",
+    "pluginVersion": "0.4.0",
     "fppVersion": "10.2",
     "fppBranch": "master",
     "phpVersion": "8.2.12",

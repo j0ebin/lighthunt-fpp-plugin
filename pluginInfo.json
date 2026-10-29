@@ -10,11 +10,11 @@
 	"allowUpdates": 1,
 	"releaseNotesStyle": "gitHistory",
 	"privacy": {
-		"summary": "Once paired, sends the song now playing, its artist and time left, and the playlist name to lightshunt.com. This appears on your public Light Hunt display page.",
+		"summary": "Once paired, sends the song now playing, its artist and time left, the next songs, and the playlist name to lightshunt.com. This appears on your public Light Hunt display page.",
 		"sends": [
 			{
 				"to": "lightshunt.com",
-				"what": "pairing key, song title and artist, file names, play state, time left, playlist name, plugin version",
+				"what": "pairing key, song title and artist, file names, play state, time left, the next songs in the playlist, playlist name, plugin version",
 				"why": "to show what is playing on your public Light Hunt display page",
 				"alwaysOn": false
 			},

@@ -12,10 +12,13 @@
 namespace LightHunt;
 
 const LH_REPO = 'lighthunt-fpp-plugin';
-const LH_VERSION = '0.3.0';
+const LH_VERSION = '0.4.0';
 const LH_KEY_RE = '/^lhr_[A-Za-z0-9_-]{43}$/';
 const LH_HEARTBEAT_SECONDS = 30;
 const LH_POLL_SECONDS = 5;
+const LH_MAX_NEXT = 3;
+/** How long a read of the running playlist is reused before FPP is asked again. */
+const LH_PLAYLIST_SECONDS = 60;
 const LH_BACKOFF = [5, 10, 20, 40, 60];
 const LH_FEEDBACK_MIN = 5;
 const LH_FEEDBACK_MAX = 2000;
@@ -352,6 +355,70 @@ function lh_fpp_tags($file)
     );
 }
 
+/** A playlist's entries with sub-playlists merged in, through FPP's own API. Null when FPP can't say. */
+function lh_fpp_playlist($name)
+{
+    $r = lh_http('GET', lh_fpp_url() . '/api/playlist/' . rawurlencode($name) . '?mergeSubs=1', array(), null, 5);
+    return $r['code'] === 200 && is_array($r['json']) ? $r['json'] : null;
+}
+
+/**
+ * The next songs FPP will play, from its status and the running playlist. Pure, so it is tested with recorded JSON.
+ * Returns up to LH_MAX_NEXT items of ['name' => sequence file, 'mediaFilename' => audio file] (either may be missing).
+ * Empty when the playlist is shuffled (FPP picks the next song live), or the position doesn't fit the playlist.
+ * index in the status is 1-based across lead-in, main and lead-out; a repeating playlist loops its main section.
+ */
+function lh_next_items($st, $playlist)
+{
+    if (!is_array($st) || !is_array($playlist)) {
+        return array();
+    }
+    if (!empty($st['random']) && (int) $st['random'] > 0) {
+        return array();
+    }
+    $sections = array();
+    foreach (array('leadIn', 'mainPlaylist', 'leadOut') as $k) {
+        $sections[$k] = isset($playlist[$k]) && is_array($playlist[$k]) ? array_values($playlist[$k]) : array();
+    }
+    $lead = count($sections['leadIn']);
+    $main = count($sections['mainPlaylist']);
+    $all = array_merge($sections['leadIn'], $sections['mainPlaylist'], $sections['leadOut']);
+    $total = count($all);
+    $pos = isset($st['current_playlist']['index']) ? (int) $st['current_playlist']['index'] : 0;
+    $count = isset($st['current_playlist']['count']) ? (int) $st['current_playlist']['count'] : 0;
+    if ($pos < 1 || $pos > $total || ($count > 0 && $count !== $total)) {
+        return array();
+    }
+    $repeat = !empty($st['repeat_mode']) && (string) $st['repeat_mode'] !== '0';
+
+    $items = array();
+    $i = $pos; // 0-based index of the entry after the current one
+    for ($steps = 0; $steps < 2 * $total && count($items) < LH_MAX_NEXT; $steps++) {
+        if ($repeat && $main > 0 && $pos <= $lead + $main && $i === $lead + $main) {
+            $i = $lead; // a repeating playlist goes back to the top of its main section, not into the lead-out
+        }
+        if ($i >= $total) {
+            break;
+        }
+        $e = $all[$i++];
+        $type = isset($e['type']) ? (string) $e['type'] : '';
+        if (!in_array($type, array('both', 'sequence', 'media'), true)) {
+            continue; // pauses, commands, scripts and the like are not songs
+        }
+        $item = array();
+        if ($type !== 'media' && !empty($e['sequenceName'])) {
+            $item['name'] = lh_clip($e['sequenceName']);
+        }
+        if ($type !== 'sequence' && !empty($e['mediaName'])) {
+            $item['mediaFilename'] = lh_clip($e['mediaName']);
+        }
+        if ($item) {
+            $items[] = $item;
+        }
+    }
+    return $items;
+}
+
 function lh_clip($value, $max = 200)
 {
     $value = (string) $value;
@@ -472,6 +539,7 @@ function lh_new_state()
         'key' => null, 'sig' => null, 'sentAt' => 0, 'nextTry' => 0, 'fails' => 0, 'rejected' => null,
         'tagCache' => array(), 'lastOk' => null, 'lastReportAt' => null, 'viewers' => null,
         'lastStatusBody' => null, 'lastStatusAt' => 0, 'badSig' => null, 'reason' => null,
+        'playlistName' => null, 'playlistAt' => 0, 'playlist' => null,
     );
 }
 
@@ -518,6 +586,39 @@ function lh_tick(&$S, $now, $io)
         }
         if (isset($S['tagCache'][$file])) {
             $report = lh_build_report($fpp, $S['tagCache'][$file]);
+        }
+    }
+
+    // Up next: the following songs in the running playlist, read from FPP at most once a minute.
+    if (isset($io['playlist']) && $report['state'] !== 'off' && isset($report['showName'])) {
+        $name = $report['showName'];
+        if ($S['playlistName'] !== $name || $now - $S['playlistAt'] >= LH_PLAYLIST_SECONDS) {
+            $S['playlist'] = call_user_func($io['playlist'], $name);
+            $S['playlistName'] = $name;
+            $S['playlistAt'] = $now;
+        }
+        $next = lh_next_items($fpp, $S['playlist']);
+        foreach ($next as $k => $item) {
+            if (!isset($item['mediaFilename'])) {
+                continue;
+            }
+            $file = $item['mediaFilename'];
+            if (!isset($S['tagCache'][$file]) && $due) {
+                if (count($S['tagCache']) >= 100) {
+                    $S['tagCache'] = array();
+                }
+                $S['tagCache'][$file] = call_user_func($io['tags'], $file);
+            }
+            $tags = isset($S['tagCache'][$file]) ? $S['tagCache'][$file] : null;
+            if ($tags && $tags['title'] !== '') {
+                $next[$k]['mediaTitle'] = lh_clip($tags['title']);
+                if ($tags['artist'] !== '') {
+                    $next[$k]['mediaArtist'] = lh_clip($tags['artist']);
+                }
+            }
+        }
+        if ($next) {
+            $report['upNext'] = $next;
         }
     }
 

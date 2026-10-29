@@ -9,7 +9,7 @@
   <ul>
     <li>The song now playing: the title and artist from the audio file's tags if they exist, the audio file name, and the sequence file name.</li>
     <li>Whether a song is playing, between songs, or the show is off, and how many seconds are left and how long the song is.</li>
-    <li>The name of the playlist that is running.</li>
+    <li>The name of the playlist that is running, and the next songs in it (up to three, with their title and artist tags and file names).</li>
     <li>The plugin version.</li>
     <li>Your pairing key, so Light Hunt knows which display the report is for.</li>
   </ul>
