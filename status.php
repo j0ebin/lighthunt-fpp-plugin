@@ -117,7 +117,9 @@
     ok: ['Live', 'text-bg-success'],
     offline: ['Cannot reach Light Hunt, retrying', 'text-bg-warning'],
     fpp_unreachable: ['Falcon Player is not answering', 'text-bg-warning'],
-    unpaired: ['Not paired', 'text-bg-secondary']
+    unpaired: ['Not paired', 'text-bg-secondary'],
+    cloned: ['Stopped: copy of another player', 'text-bg-danger'],
+    remote: ['Stopped: multisync remote', 'text-bg-warning']
   };
 
   function render(s) {
@@ -143,8 +145,10 @@
         : (s.result === null ? ['Starting...', 'text-bg-secondary'] : (RESULTS[s.result] || RESULTS.ok));
       $('lh-result').textContent = r[0];
       $('lh-result').className = 'badge ' + r[1];
-      $('lh-reason').textContent = s.pollerRunning && s.result === 'offline' && s.reason ? s.reason : '';
-      var nowText = s.state === 'playing' ? (s.song || 'Playing') : (s.state === 'between' ? 'Between songs' : 'Nothing right now');
+      // The server sends a reason only when there is a problem to explain (offline, a copied card, a multisync remote).
+      $('lh-reason').textContent = s.pollerRunning && s.reason ? s.reason : '';
+      var stopped = s.result === 'cloned' || s.result === 'remote';
+      var nowText = stopped ? 'Not reporting' : s.state === 'playing' ? (s.song || 'Playing') : (s.state === 'between' ? 'Between songs' : 'Nothing right now');
       $('lh-song').textContent = nowText;
       $('lh-last').textContent = ago(s.lastReportAt);
       $('lh-viewers').textContent = s.viewers === null || s.viewers === undefined ? 'unknown' : s.viewers;

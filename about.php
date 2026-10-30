@@ -30,12 +30,12 @@
 
   <h2 class="h5">What stays on this device</h2>
   <ul>
-    <li>Your pairing key, in a file only the Falcon Player user can read (<code>plugindata/lighthunt-fpp-plugin/config.json</code>).</li>
-    <li>A small status file for the plugin page, and the log <code>plugin-lighthunt-fpp-plugin.log</code>. The log never contains the key.</li>
+    <li>Your pairing key, in a file only the Falcon Player user can read (<code>plugindata/lighthunt-fpp-plugin/config.json</code>). Next to it is this player's hardware id, read from Falcon Player, which the plugin uses to notice a copy of the SD card. It is never sent.</li>
+    <li>A small status file for the plugin page (kept in memory, in <code>/dev/shm</code>, when the player has it), and the log <code>plugin-lighthunt-fpp-plugin.log</code>. The log never contains the key.</li>
   </ul>
 
   <h2 class="h5">How often</h2>
-  <p>It reads Falcon Player's own status every 5 seconds. It sends a report when the song changes and at least every 30 seconds. If Light Hunt hears nothing for 60 seconds, visitors see your setlist instead.</p>
+  <p>It reads Falcon Player's own status every 5 seconds. It sends a report when the song changes, when a song starts over, and at least every 20 seconds. If Light Hunt hears nothing for 60 seconds, visitors see your setlist instead.</p>
 
   <h2 class="h5">Stopping it</h2>
   <p>Select <em>Unpair</em> on the plugin page, then also press <em>Unpair</em> under <em>Show what's playing</em> on your display page. Uninstalling the plugin removes its key, status file and log from this device.</p>

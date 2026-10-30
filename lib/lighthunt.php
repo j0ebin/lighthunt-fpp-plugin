@@ -12,14 +12,18 @@
 namespace LightHunt;
 
 const LH_REPO = 'lighthunt-fpp-plugin';
-const LH_VERSION = '0.4.0';
+const LH_VERSION = '0.4.1';
 const LH_KEY_RE = '/^lhr_[A-Za-z0-9_-]{43}$/';
-const LH_HEARTBEAT_SECONDS = 30;
+// Light Hunt calls a sender stale after 60 seconds (STALE_MS in api/_relay.ts), so this leaves room for two lost posts.
+const LH_HEARTBEAT_SECONDS = 20;
 const LH_POLL_SECONDS = 5;
 const LH_MAX_NEXT = 3;
 /** How long a read of the running playlist is reused before FPP is asked again. */
 const LH_PLAYLIST_SECONDS = 60;
 const LH_BACKOFF = [5, 10, 20, 40, 60];
+const LH_RETRY_AFTER_MAX = 600;
+const LH_TAG_RETRY_SECONDS = 60;
+const LH_RESTART_DROP = 5;
 const LH_FEEDBACK_MIN = 5;
 const LH_FEEDBACK_MAX = 2000;
 const LH_LOG_LINES = 20;
@@ -61,9 +65,20 @@ function lh_data_dir()
     return lh_media_dir() . '/plugindata/' . LH_REPO;
 }
 
+/**
+ * status.json is rewritten every few seconds around the clock, which wears out an SD card, and it
+ * means nothing after a reboot. So it lives in RAM (/dev/shm) when that folder is there, and in the
+ * data folder when it is not. LIGHTHUNT_SHM_DIR is for tests.
+ */
+function lh_status_path()
+{
+    $shm = getenv('LIGHTHUNT_SHM_DIR') ?: '/dev/shm';
+    return is_dir($shm) && is_writable($shm) ? rtrim($shm, '/') . '/' . LH_REPO . '-status.json' : lh_data_dir() . '/status.json';
+}
+
 function lh_file($name)
 {
-    return lh_data_dir() . '/' . $name;
+    return $name === 'status.json' ? lh_status_path() : lh_data_dir() . '/' . $name;
 }
 
 /** The one runtime log FPP rotates. Never write the pairing key here. */
@@ -75,7 +90,7 @@ function lh_log($message)
 function lh_read_json($name)
 {
     $raw = @file_get_contents(lh_file($name));
-    $data = $raw === false ? null : json_decode($raw, true);
+    $data = $raw === false ? null : json_decode($raw, true, 512, JSON_INVALID_UTF8_SUBSTITUTE);
     return is_array($data) ? $data : null;
 }
 
@@ -85,13 +100,26 @@ function lh_write_json($name, $data, $mode = 0600)
     $path = lh_file($name);
     $tmp = $path . '.' . getmypid() . '.tmp';
     $old = umask(0077);
-    $ok = @file_put_contents($tmp, json_encode($data)) !== false;
+    // A name FPP gave us in Latin-1 must not turn the whole file into nothing.
+    $body = json_encode($data, JSON_INVALID_UTF8_SUBSTITUTE);
+    $ok = $body !== false && @file_put_contents($tmp, $body) === strlen($body);
     umask($old);
     if (!$ok) {
+        @unlink($tmp);
         return false;
     }
     @chmod($tmp, $mode);
-    return @rename($tmp, $path);
+    if (!@rename($tmp, $path)) {
+        @unlink($tmp);
+        return false;
+    }
+    return true;
+}
+
+/** Shown when the player cannot save Light Hunt's files, at the start of pairing and when it finishes. */
+function lh_cant_save_message()
+{
+    return 'This player can\'t save Light Hunt\'s files. In FPP, open Status/Control, press Restart FPPD, then try again.';
 }
 
 /** Developers can point the plugin at a local Light Hunt server with the LIGHTHUNT_BASE_URL environment variable. */
@@ -144,11 +172,12 @@ function lh_http($method, $url, $headers = array(), $body = null, $timeout = 5)
     $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $errno = curl_errno($ch);
     $error = curl_error($ch);
-    curl_close($ch);
+    // No curl_close: it does nothing since PHP 8.0 and is deprecated in 8.5. The handle closes itself.
     if ($raw === false) {
         return array('code' => 0, 'json' => null, 'retryAfter' => null, 'errno' => $errno, 'error' => $error, 'serverTime' => $serverTime);
     }
-    $json = json_decode($raw, true);
+    // FPP can hand back a Latin-1 file name; substitute it instead of dropping the whole answer.
+    $json = json_decode($raw, true, 512, JSON_INVALID_UTF8_SUBSTITUTE);
     return array('code' => $code, 'json' => is_array($json) ? $json : null, 'retryAfter' => $retry, 'errno' => 0, 'error' => '', 'serverTime' => $serverTime);
 }
 
@@ -162,7 +191,8 @@ function lh_reason_key($r)
         $errno = isset($r['errno']) ? (int) $r['errno'] : 0;
         return in_array($errno, array(35, 51, 60), true) ? 'tls' : 'network';
     }
-    return 'http_' . (int) $r['code'];
+    // Light Hunt never answers a 200 that way, so something else did (a proxy, a captive portal, a filter).
+    return (int) $r['code'] === 200 ? 'bad_reply' : 'http_' . (int) $r['code'];
 }
 
 /** The sentence for a reason key. $now is the player's clock, shown so the owner can spot a wrong date. */
@@ -173,6 +203,15 @@ function lh_reason_text($key, $now)
     }
     if ($key === 'network') {
         return 'Could not reach Light Hunt. Check this device has internet access.';
+    }
+    if ($key === 'bad_reply') {
+        return 'Something other than Light Hunt answered. Check this network for a proxy, a login page or a filter.';
+    }
+    if ($key === 'cloned') {
+        return 'This looks like a copy of another player\'s SD card. Unpair and pair this player again.';
+    }
+    if ($key === 'remote') {
+        return 'This player is a multisync remote. Pair the master player instead.';
     }
     if (strpos((string) $key, 'http_') === 0) {
         return 'Light Hunt answered with an error (HTTP ' . (int) substr($key, 5) . ').';
@@ -343,10 +382,33 @@ function lh_fpp_status()
     return $r['code'] === 200 ? $r['json'] : null;
 }
 
-/** Title and artist tags of an audio file, through FPP's own media endpoint. Empty strings when absent. */
+/**
+ * FPP's hardware id for this player (the Pi's serial, say), from /api/fppd/status "uuid". FPP says
+ * "Unknown" when it cannot find one; that is no id at all.
+ */
+function lh_fpp_uuid($st)
+{
+    $u = isset($st['uuid']) && is_string($st['uuid']) ? trim($st['uuid']) : '';
+    return ($u === '' || strtolower($u) === 'unknown') ? null : $u;
+}
+
+/** True when FPP is a multisync remote: it plays what the master tells it to, so the master is the one to pair. */
+function lh_fpp_is_remote($st)
+{
+    return isset($st['mode_name']) && is_string($st['mode_name']) && strtolower(trim($st['mode_name'])) === 'remote';
+}
+
+/**
+ * Title and artist tags of an audio file, through FPP's own media endpoint. Empty strings when the file
+ * has none. Null when FPP gave no real answer (a timeout or a 5xx while ffprobe is busy), so the caller
+ * tries again later instead of remembering "no tags". A 200 and a 404 are real answers.
+ */
 function lh_fpp_tags($file)
 {
     $r = lh_http('GET', lh_fpp_url() . '/api/media/' . rawurlencode($file) . '/meta', array(), null, 5);
+    if ($r['code'] !== 200 && $r['code'] !== 404) {
+        return null;
+    }
     $tags = ($r['code'] === 200 && isset($r['json']['format']['tags']) && is_array($r['json']['format']['tags']))
         ? array_change_key_case($r['json']['format']['tags'], CASE_LOWER) : array();
     return array(
@@ -500,11 +562,7 @@ function lh_signature($report)
 
 function lh_encode_report($report)
 {
-    $flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
-    if (defined('JSON_INVALID_UTF8_SUBSTITUTE')) {
-        $flags |= JSON_INVALID_UTF8_SUBSTITUTE;
-    }
-    return json_encode($report, $flags);
+    return json_encode($report, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
 }
 
 /* ---------- Config and status files ---------- */
@@ -516,19 +574,25 @@ function lh_config()
     return ($c && isset($c['key']) && is_string($c['key']) && preg_match(LH_KEY_RE, $c['key'])) ? $c : null;
 }
 
-/** What the settings page shows. Written by the daemon; holds no secrets. */
-function lh_write_status_if_needed(&$S, $now, $doc)
+/**
+ * What the settings page shows. Written by the daemon; holds no secrets. $now is the wall clock (shown
+ * to the owner); $mono is the monotonic clock the rewrite interval is counted on.
+ */
+function lh_write_status_if_needed(&$S, $now, $doc, $mono = null)
 {
+    $mono = $mono === null ? $now : $mono;
     $doc['version'] = LH_VERSION;
     $doc['pid'] = getmypid();
-    $body = json_encode($doc);
-    if ($body === $S['lastStatusBody'] && $now - $S['lastStatusAt'] < 60) {
+    $body = json_encode($doc, JSON_INVALID_UTF8_SUBSTITUTE);
+    // systemd-logind deletes a user's /dev/shm files when that user's last login session ends (RemoveIPC,
+    // on by default), so an owner logging out of SSH as fpp takes the file with it. Write it again then.
+    if ($body === $S['lastStatusBody'] && $mono - $S['lastStatusAt'] < 60 && is_file(lh_file('status.json'))) {
         return;
     }
     $doc['updatedAt'] = $now;
     lh_write_json('status.json', $doc, 0644);
     $S['lastStatusBody'] = $body;
-    $S['lastStatusAt'] = $now;
+    $S['lastStatusAt'] = $mono;
 }
 
 /* ---------- The poll loop, one tick at a time ---------- */
@@ -537,31 +601,78 @@ function lh_new_state()
 {
     return array(
         'key' => null, 'sig' => null, 'sentAt' => 0, 'nextTry' => 0, 'fails' => 0, 'rejected' => null,
-        'tagCache' => array(), 'lastOk' => null, 'lastReportAt' => null, 'viewers' => null,
+        'tagCache' => array(), 'tagRetry' => array(), 'lastOk' => null, 'lastReportAt' => null, 'viewers' => null,
         'lastStatusBody' => null, 'lastStatusAt' => 0, 'badSig' => null, 'reason' => null,
+        'lastPlayed' => null, 'restartPending' => false, 'notice' => null, 'lastError' => null,
         'playlistName' => null, 'playlistAt' => 0, 'playlist' => null,
     );
 }
 
+/** Seconds to wait after the $fails-th failure in a row: LH_BACKOFF, spread by +/-20% so many players do not retry in step. $rand is 0..1. */
+function lh_backoff($fails, $rand = null)
+{
+    $base = LH_BACKOFF[min(max((int) $fails, 1), count(LH_BACKOFF)) - 1];
+    $rand = $rand === null ? mt_rand() / mt_getrandmax() : $rand;
+    return max(1, (int) round($base * (0.8 + 0.4 * $rand)));
+}
+
+/** Retry-After as seconds: at least 2, at most 10 minutes. A server (or a proxy) cannot park the poller for hours. */
+function lh_retry_after($value)
+{
+    return min(LH_RETRY_AFTER_MAX, max(2, (int) $value));
+}
+
 /**
- * One pass. $io supplies 'status' => fn(): array|null, 'tags' => fn(string): array, 'post' => fn(key, json): http result.
+ * One pass. $io supplies 'status' => fn(): array|null, 'tags' => fn(string): array|null, 'post' => fn(key, json): http result,
+ * and optionally 'rand' => fn(): float 0..1 for the backoff spread.
+ * $now is the wall clock. $mono is a monotonic clock in seconds (the poller passes hrtime): every interval
+ * is counted on it, because a Pi with no clock chip steps its wall clock when NTP first answers. Tests may omit it.
  * Never throws and never blocks longer than the HTTP timeouts, so a bad network cannot stall anything else.
  */
-function lh_tick(&$S, $now, $io)
+function lh_tick(&$S, $now, $io, $mono = null)
 {
+    $mono = $mono === null ? $now : $mono;
     $cfg = lh_config();
     if (!$cfg) {
         $S['sig'] = null;
-        return lh_write_status_if_needed($S, $now, array('result' => 'unpaired'));
+        return lh_write_status_if_needed($S, $now, array('result' => 'unpaired'), $mono);
     }
     if ($cfg['key'] === $S['rejected']) {
-        return lh_write_status_if_needed($S, $now, array('result' => 'revoked'));
+        return lh_write_status_if_needed($S, $now, array('result' => 'revoked'), $mono);
     }
 
     $fpp = call_user_func($io['status']);
     if ($fpp === null) {
         // Nothing to say while fppd is down. Light Hunt shows the setlist after 60 seconds.
-        return lh_write_status_if_needed($S, $now, array('result' => 'fpp_unreachable'));
+        return lh_write_status_if_needed($S, $now, array('result' => 'fpp_unreachable'), $mono);
+    }
+
+    // Two reasons to stay quiet. Each says so once in the log, and says hello again the moment it clears.
+    $uuid = lh_fpp_uuid($fpp);
+    $notice = null;
+    if (lh_fpp_is_remote($fpp)) {
+        $notice = 'remote';
+    } elseif ($uuid !== null && !empty($cfg['uuid']) && $cfg['uuid'] !== $uuid) {
+        $notice = 'cloned';
+    }
+    if ($notice !== null) {
+        if ($S['notice'] !== $notice) {
+            lh_log($notice === 'remote'
+                ? 'This player is a multisync remote, so it sends nothing. Pair the master player instead.'
+                : 'This player\'s hardware id differs from the one it was paired with: the SD card looks like a copy of another player\'s. Sending stopped. Unpair and pair again.');
+        }
+        $S['notice'] = $notice;
+        $S['sig'] = null;
+        return lh_write_status_if_needed($S, $now, array('result' => $notice, 'reason' => $notice), $mono);
+    }
+    $S['notice'] = null;
+    if ($uuid !== null && empty($cfg['uuid'])) {
+        // Paired before 0.4.1, or the pairing could not read the id: pin the first one this player shows.
+        $fresh = lh_config();
+        if ($fresh && $fresh['key'] === $cfg['key']) {
+            $fresh['uuid'] = $uuid;
+            lh_write_json('config.json', $fresh);
+        }
     }
 
     if ($cfg['key'] !== $S['key']) {
@@ -574,15 +685,29 @@ function lh_tick(&$S, $now, $io)
 
     $report = lh_build_report($fpp);
     $sig = lh_signature($report);
-    $due = ($sig !== $S['sig'] || $now - $S['sentAt'] >= LH_HEARTBEAT_SECONDS) && $now >= $S['nextTry'];
+    // The same song twice in a row, or one song on a loop, keeps its signature. Its clock jumping back is the restart.
+    $played = lh_seconds(isset($fpp['seconds_played']) ? $fpp['seconds_played'] : null);
+    if ($played !== null && $S['lastPlayed'] !== null && $played < $S['lastPlayed'] - LH_RESTART_DROP) {
+        $S['restartPending'] = true;
+    }
+    $S['lastPlayed'] = $played;
+    $due = ($sig !== $S['sig'] || $S['restartPending'] || $mono - $S['sentAt'] >= LH_HEARTBEAT_SECONDS) && $mono >= $S['nextTry'];
     if ($report['state'] === 'playing' && isset($report['mediaFilename'])) {
-        // Tags are read once per file, when it is first about to be reported.
+        // Tags are read once per file, when it is first about to be reported. Only a real answer is
+        // remembered; a timeout or 5xx from FPP is tried again after a minute.
         $file = $report['mediaFilename'];
-        if (!isset($S['tagCache'][$file]) && $due) {
-            if (count($S['tagCache']) >= 100) {
+        if (!isset($S['tagCache'][$file]) && $due && (!isset($S['tagRetry'][$file]) || $mono >= $S['tagRetry'][$file])) {
+            if (count($S['tagCache']) + count($S['tagRetry']) >= 100) {
                 $S['tagCache'] = array();
+                $S['tagRetry'] = array();
             }
-            $S['tagCache'][$file] = call_user_func($io['tags'], $file);
+            $tags = call_user_func($io['tags'], $file);
+            if ($tags === null) {
+                $S['tagRetry'][$file] = $mono + LH_TAG_RETRY_SECONDS;
+            } else {
+                $S['tagCache'][$file] = $tags;
+                unset($S['tagRetry'][$file]);
+            }
         }
         if (isset($S['tagCache'][$file])) {
             $report = lh_build_report($fpp, $S['tagCache'][$file]);
@@ -625,7 +750,8 @@ function lh_tick(&$S, $now, $io)
     if ($due) {
         $r = call_user_func($io['post'], $cfg['key'], lh_encode_report($report));
         $code = $r['code'];
-        if ($code === 200) {
+        // Light Hunt answers {"ok": true, ...} on success. A bare 200 is not enough: a proxy or login page also says 200.
+        if ($code === 200 && isset($r['json']['ok']) && $r['json']['ok'] === true) {
             if ($S['lastOk'] === false) {
                 lh_log('Reports are reaching Light Hunt again');
             }
@@ -633,15 +759,16 @@ function lh_tick(&$S, $now, $io)
             $S['reason'] = null;
             $S['fails'] = 0;
             $S['sig'] = $sig;
-            $S['sentAt'] = $now;
+            $S['sentAt'] = $mono;
             $S['lastReportAt'] = $now;
             $S['badSig'] = null;
+            $S['restartPending'] = false;
             $S['viewers'] = isset($r['json']['viewers']) ? (int) $r['json']['viewers'] : null;
         } elseif ($code === 401) {
             $S['rejected'] = $cfg['key'];
             lh_log('Light Hunt no longer accepts this pairing (the owner unpaired it). Pair again from the plugin page.');
         } elseif ($code === 429) {
-            $S['nextTry'] = $now + max(2, (int) $r['retryAfter']);
+            $S['nextTry'] = $mono + lh_retry_after(isset($r['retryAfter']) ? $r['retryAfter'] : 0);
         } elseif ($code === 400 || $code === 413) {
             // The report itself was refused; retrying the same report cannot help. Wait for the next song.
             if ($S['badSig'] !== $sig) {
@@ -649,13 +776,15 @@ function lh_tick(&$S, $now, $io)
             }
             $S['badSig'] = $sig;
             $S['sig'] = $sig;
-            $S['sentAt'] = $now;
+            $S['sentAt'] = $mono;
+            $S['restartPending'] = false;
         } else {
             $S['fails']++;
-            $S['nextTry'] = $now + LH_BACKOFF[min($S['fails'], count(LH_BACKOFF)) - 1];
+            $S['nextTry'] = $mono + lh_backoff($S['fails'], isset($io['rand']) ? call_user_func($io['rand']) : null);
             $S['reason'] = lh_reason_key($r);
             if ($S['lastOk'] !== false) {
-                $what = $code === 0 ? 'curl error ' . (isset($r['errno']) ? (int) $r['errno'] : 0) . ': ' . (isset($r['error']) ? $r['error'] : '') : 'HTTP ' . $code;
+                $what = $code === 0 ? 'curl error ' . (isset($r['errno']) ? (int) $r['errno'] : 0) . ': ' . (isset($r['error']) ? $r['error'] : '')
+                    : ($code === 200 ? 'an answer that was not from Light Hunt' : 'HTTP ' . $code);
                 lh_log('Cannot reach Light Hunt (' . $what . '). Retrying with a growing delay.');
             }
             $S['lastOk'] = false;
@@ -671,7 +800,27 @@ function lh_tick(&$S, $now, $io)
         'viewers' => $S['viewers'],
         'reason' => $S['lastOk'] === false ? $S['reason'] : null,
     );
-    lh_write_status_if_needed($S, $now, $doc);
+    lh_write_status_if_needed($S, $now, $doc, $mono);
+}
+
+/**
+ * lh_tick for the poller loop. A tick that throws is logged once, not every 5 seconds all night, and
+ * once more when ticks work again.
+ */
+function lh_safe_tick(&$S, $now, $io, $mono = null)
+{
+    try {
+        lh_tick($S, $now, $io, $mono);
+        if ($S['lastError'] !== null) {
+            lh_log('Poller error cleared');
+            $S['lastError'] = null;
+        }
+    } catch (\Throwable $e) {
+        if ($S['lastError'] !== $e->getMessage()) {
+            lh_log('Poller error: ' . $e->getMessage());
+        }
+        $S['lastError'] = $e->getMessage();
+    }
 }
 
 /** True when this plugin has been uninstalled out from under a running poller: its file or data folder is gone. */

@@ -33,7 +33,7 @@
 		],
 		"collects": [
 			{
-				"what": "Light Hunt pairing key and display name",
+				"what": "Light Hunt pairing key and display name, and this player's hardware id (read from Falcon Player, never sent) to notice a copied SD card",
 				"about": "operator",
 				"keptDays": null,
 				"canDelete": true,
@@ -51,7 +51,7 @@
 				"about": "operator",
 				"keptDays": null,
 				"canDelete": true,
-				"where": "plugindata/lighthunt-fpp-plugin/status.json"
+				"where": "plugindata/lighthunt-fpp-plugin/status.json, or /dev/shm/lighthunt-fpp-plugin-status.json when the player has /dev/shm"
 			},
 			{
 				"what": "process ID of the running poller",

@@ -7,6 +7,7 @@
 require_once __DIR__ . '/lib/lighthunt.php';
 
 use function LightHunt\lh_base_url;
+use function LightHunt\lh_cant_save_message;
 use function LightHunt\lh_clock_warning;
 use function LightHunt\lh_config;
 use function LightHunt\lh_build_feedback;
@@ -15,6 +16,7 @@ use function LightHunt\lh_data_dir;
 use function LightHunt\lh_encode_report;
 use function LightHunt\lh_feedback_context;
 use function LightHunt\lh_feedback_result;
+use function LightHunt\lh_fpp_uuid;
 use function LightHunt\lh_file;
 use function LightHunt\lh_local_deadline;
 use function LightHunt\lh_log;
@@ -106,7 +108,7 @@ function lighthuntfpppluginPairStart()
         return json(array('ok' => false, 'error' => 'This player is already paired. Press Unpair first.'));
     }
     // Check before asking Light Hunt for a code: a code this player can't save is one the owner never sees.
-    $cantSave = 'This player can\'t save Light Hunt\'s files. In FPP, open Status/Control, press Restart FPPD, then try again.';
+    $cantSave = lh_cant_save_message();
     if (!is_writable(lh_data_dir())) {
         return json(array('ok' => false, 'error' => $cantSave));
     }
@@ -135,44 +137,79 @@ function lighthuntfpppluginPairStart()
 // POST /api/plugin/lighthunt-fpp-plugin/paircheck (it writes files, so not GET)
 function lighthuntfpppluginPairCheck()
 {
+    return json(lighthuntfpppluginPairCheckWith());
+}
+
+/** Writes the pairing. Pins this player's hardware id when FPP gives one, so a copy of the SD card can be told apart later. $status is for tests. */
+function lighthuntfpppluginSavePairing($key, $display, $status = null)
+{
+    $fpp = call_user_func($status ? $status : 'LightHunt\\lh_fpp_status');
+    $uuid = $fpp ? lh_fpp_uuid($fpp) : null;
+    $cfg = array(
+        'key' => $key,
+        'displayId' => isset($display['id']) ? (int) $display['id'] : null,
+        'displayName' => isset($display['name']) ? (string) $display['name'] : null,
+        'pairedAt' => gmdate('c'),
+    );
+    if ($uuid !== null) {
+        $cfg['uuid'] = $uuid;
+    }
+    if (!lh_write_json('config.json', $cfg)) {
+        return false;
+    }
+    @unlink(lh_file('pending.json'));
+    lh_log('Paired with display ' . ($cfg['displayId'] !== null ? $cfg['displayId'] : '?'));
+    lh_start_poller();
+    return true;
+}
+
+/** $post and $status are for tests. */
+function lighthuntfpppluginPairCheckWith($post = null, $status = null)
+{
     $pending = lh_read_json('pending.json');
     if (!$pending) {
-        return json(array('status' => lh_config() ? 'paired' : 'none'));
+        return array('status' => lh_config() ? 'paired' : 'none');
     }
     if (lh_pending_deadline($pending) <= time()) {
         @unlink(lh_file('pending.json'));
-        return json(array('status' => 'expired'));
+        return array('status' => 'expired');
+    }
+    // Light Hunt hands the key out once. If the last try could not save it, it waits here (inside the code's
+    // 10 minutes) and this try only saves it again, without asking Light Hunt.
+    if (isset($pending['collected']['key'])) {
+        $c = $pending['collected'];
+        return lighthuntfpppluginSavePairing($c['key'], isset($c['display']) && is_array($c['display']) ? $c['display'] : array(), $status)
+            ? array('status' => 'paired')
+            : array('status' => 'pending', 'warning' => lh_cant_save_message());
     }
     // Light Hunt allows 120 checks per code per 10 minutes; stay well under it, even with several tabs open.
     if (time() - (int) (isset($pending['lastCheck']) ? $pending['lastCheck'] : 0) < 5) {
-        return json(array('status' => 'pending'));
+        return array('status' => 'pending');
     }
     $pending['lastCheck'] = time();
     lh_write_json('pending.json', $pending);
 
-    $r = lh_post_json('/api/relay/pair/status', array('code' => $pending['code'], 'deviceSecret' => $pending['deviceSecret']));
+    $r = call_user_func($post ? $post : 'LightHunt\\lh_post_json', '/api/relay/pair/status', array('code' => $pending['code'], 'deviceSecret' => $pending['deviceSecret']));
     if ($r['code'] === 200 && isset($r['json']['status']) && $r['json']['status'] === 'pending') {
-        return json(array('status' => 'pending'));
+        return array('status' => 'pending');
     }
     if ($r['code'] === 200 && isset($r['json']['status']) && $r['json']['status'] === 'paired' && isset($r['json']['key']) && preg_match(LH_KEY_RE, $r['json']['key'])) {
         $display = isset($r['json']['display']) && is_array($r['json']['display']) ? $r['json']['display'] : array();
-        lh_write_json('config.json', array(
-            'key' => $r['json']['key'],
-            'displayId' => isset($display['id']) ? (int) $display['id'] : null,
-            'displayName' => isset($display['name']) ? (string) $display['name'] : null,
-            'pairedAt' => gmdate('c'),
-        ));
-        @unlink(lh_file('pending.json'));
-        lh_log('Paired with display ' . (isset($display['id']) ? (int) $display['id'] : '?'));
-        lh_start_poller();
-        return json(array('status' => 'paired'));
+        if (lighthuntfpppluginSavePairing($r['json']['key'], $display, $status)) {
+            return array('status' => 'paired');
+        }
+        // Full or read-only card. Not paired, so keep the code, and keep the key beside it to save on the next try.
+        $pending['collected'] = array('key' => $r['json']['key'], 'display' => $display);
+        lh_write_json('pending.json', $pending);
+        lh_log('Light Hunt accepted the pairing but this player could not save it');
+        return array('status' => 'pending', 'warning' => lh_cant_save_message());
     }
     if ($r['code'] === 404 || $r['code'] === 410 || $r['code'] === 409) {
         @unlink(lh_file('pending.json'));
-        return json(array('status' => 'expired'));
+        return array('status' => 'expired');
     }
     $why = $r['code'] === 0 ? lh_reason_text(lh_reason_key($r), time()) : 'Light Hunt answered with an error (HTTP ' . (int) $r['code'] . ').';
-    return json(array('status' => 'pending', 'warning' => $why . ' Still trying.'));
+    return array('status' => 'pending', 'warning' => $why . ' Still trying.');
 }
 
 // POST /api/plugin/lighthunt-fpp-plugin/unpair

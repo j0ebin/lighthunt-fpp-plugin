@@ -33,7 +33,7 @@ A display has one sender at a time. Pairing a new FPP, or the Windows Relay for 
 
 ## What it sends
 
-Only after you pair. Every 5 seconds the plugin reads `http://127.0.0.1/api/fppd/status` on the player. It posts to `https://lightshunt.com/api/now-playing` when the song changes, and at least every 30 seconds. This is the whole payload:
+Only after you pair. Every 5 seconds the plugin reads `http://127.0.0.1/api/fppd/status` on the player. It posts to `https://lightshunt.com/api/now-playing` when the song changes, when a song starts over, and at least every 20 seconds. This is the whole payload:
 
 ```json
 {
@@ -49,7 +49,7 @@ Only after you pair. Every 5 seconds the plugin reads `http://127.0.0.1/api/fppd
   "upNext": [
     { "name": "Wizards in Winter.fseq", "mediaFilename": "Wizards in Winter.mp3", "mediaTitle": "Wizards in Winter", "mediaArtist": "Trans-Siberian Orchestra" }
   ],
-  "relayVersion": "0.4.0"
+  "relayVersion": "0.4.1"
 }
 ```
 
@@ -71,7 +71,7 @@ The **Send feedback** card on the plugin page posts to `https://lightshunt.com/a
   "message": "What you typed",
   "email": "only if you typed one",
   "context": {
-    "pluginVersion": "0.4.0",
+    "pluginVersion": "0.4.1",
     "fppVersion": "10.2",
     "fppBranch": "master",
     "phpVersion": "8.2.12",
@@ -95,9 +95,15 @@ On the player, the key lives in `plugindata/lighthunt-fpp-plugin/config.json` (m
 
 - `lighthunt-daemon.php` is a small PHP process started by `scripts/postStart.sh` and stopped by `scripts/preStop.sh`. It runs apart from `fppd`, so a slow network can never hold up your show. Until you pair it, it only waits.
 - The poller always runs as the media folder's owner (`fpp`), whether `postStart.sh` or the plugin page started it. `preStop.sh`, `fpp_uninstall.sh` and an update find it by its command line, so no copy is missed. While `fppd` is stopped the plugin page does not restart it, and the poller never creates the data folder (only `fpp_install.sh` and `start.sh` run as root do), so nothing comes back after an uninstall.
-- Failed sends retry after 5, 10, 20, 40, then 60 seconds. A `429` waits for `Retry-After`. A `401` (unpaired on Light Hunt) stops sending until you pair again.
+- Failed sends retry after 5, 10, 20, 40, then 60 seconds, each wait spread by up to 20% so many players do not retry in step. A `429` waits for `Retry-After` (at most 10 minutes). A `401` (unpaired on Light Hunt) stops sending until you pair again.
+- A send counts only when Light Hunt answers `200` with `{ "ok": true }`. A bare `200` (a proxy or a login page) shows as a problem, not as Live.
+- Every interval uses a monotonic clock (`hrtime`), so a Pi that steps its clock when NTP first answers keeps its heartbeat. Wall time is used only for what the page shows.
+- A song that starts over (a one-song loop, or the same song twice) is reported at once: `seconds_played` dropping by more than 5 counts as a restart.
+- The plugin sends nothing, and says why on its page, in two cases. **Multisync remote:** `mode_name` is `remote` in `/api/fppd/status`, so pair the master instead. **Copied SD card:** the `uuid` in the status (FPP's hardware id; on a Pi it comes from the board) differs from the one stored at pairing. Players paired before 0.4.1 pin the first id they see.
+- A timeout or 5xx from FPP's tag lookup is not remembered as "no tags"; it is tried again after a minute. Only a 200 or a 404 is cached.
+- `status.json` is rewritten every few seconds, so it lives in RAM (`/dev/shm/lighthunt-fpp-plugin-status.json`) when `/dev/shm` exists, and in the data folder when it does not.
 - `lib/lighthunt.php` (namespace `LightHunt`, so it cannot clash with FPP or other plugins) holds the mapping from FPP's status to the report (`lh_build_report`) and the poll loop (`lh_tick`).
-- `api.php` serves the page's endpoints at `/api/plugin/lighthunt-fpp-plugin/`. The browser never sees the key or the pairing secret. `status` is a read-only GET; `ensure` (a POST the page calls when it opens) starts the poller if the player is paired and fppd is running; `pairstart` is refused while the player is already paired, so press Unpair first.
+- `api.php` serves the page's endpoints at `/api/plugin/lighthunt-fpp-plugin/`. The browser never sees the key or the pairing secret. If the card cannot save the key at the end of pairing, the code stays valid and the key waits in `pending.json` (Light Hunt hands it out once), so the next check saves it. `status` is a read-only GET; `ensure` (a POST the page calls when it opens) starts the poller if the player is paired and fppd is running; `pairstart` is refused while the player is already paired, so press Unpair first.
 - `status.php`, `about.php` and `menu.inc` are the pages.
 
 ## Tests

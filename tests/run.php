@@ -10,13 +10,16 @@ $tmp = sys_get_temp_dir() . '/lh-test-' . getmypid();
 putenv('FPP_MEDIA_DIR=' . $tmp);
 require __DIR__ . '/../lib/lighthunt.php';
 
-use function LightHunt\{lh_base_url, lh_build_feedback, lh_build_report, lh_feedback_result, lh_log_tail, lh_redact_log, lh_config, lh_clock_warning, lh_daemon_running, lh_encode_report, lh_file, lh_local_deadline,
-    lh_log_file, lh_new_state, lh_orphaned, lh_pending_deadline, lh_read_json, lh_reason_key, lh_reason_text, lh_signature,
-    lh_start_poller, lh_tick, lh_data_dir, lh_write_json, lh_next_items};
+use function LightHunt\{lh_backoff, lh_base_url, lh_build_feedback, lh_build_report, lh_cant_save_message, lh_feedback_result, lh_fpp_is_remote, lh_fpp_uuid, lh_http, lh_log_tail, lh_redact_log, lh_config, lh_clock_warning, lh_daemon_running, lh_encode_report, lh_file, lh_local_deadline,
+    lh_log_file, lh_new_state, lh_orphaned, lh_pending_deadline, lh_read_json, lh_reason_key, lh_reason_text, lh_retry_after, lh_safe_tick, lh_signature,
+    lh_start_poller, lh_status_path, lh_tick, lh_data_dir, lh_write_json, lh_next_items};
 use const LightHunt\LH_VERSION;
 
 // Nothing here may reach lightshunt.com, even if a check goes wrong.
 putenv('LIGHTHUNT_BASE_URL=http://127.0.0.1:1');
+putenv('LIGHTHUNT_FPP_URL=http://127.0.0.1:1');
+// status.json goes to /dev/shm when it exists; point that at nothing so these tests use the data folder (one test turns it on).
+putenv('LIGHTHUNT_SHM_DIR=' . $tmp . '/no-shm');
 
 $failures = 0;
 $checks = 0;
@@ -40,7 +43,7 @@ function fixture($name)
 
 /* ---------- Constants live in the namespace, never global (fpp-data#293 review, item 2) ---------- */
 
-foreach (array('LH_REPO', 'LH_VERSION', 'LH_KEY_RE', 'LH_HEARTBEAT_SECONDS', 'LH_POLL_SECONDS', 'LH_BACKOFF') as $name) {
+foreach (array('LH_REPO', 'LH_VERSION', 'LH_KEY_RE', 'LH_HEARTBEAT_SECONDS', 'LH_POLL_SECONDS', 'LH_BACKOFF', 'LH_RETRY_AFTER_MAX', 'LH_TAG_RETRY_SECONDS', 'LH_RESTART_DROP') as $name) {
     check(!defined($name), "$name is not a global constant");
     check(defined('LightHunt\\' . $name), "LightHunt\\$name is defined");
 }
@@ -91,7 +94,7 @@ $long = fixture('playing-sequence-and-media');
 $long['current_song'] = str_repeat('a', 500) . '.mp3';
 same(strlen(lh_build_report($long)['mediaFilename']), 200, 'long names are clipped to 200');
 $long['current_song'] = str_repeat("\u{1F384}", 300);
-same(mb_strlen(lh_build_report($long)['mediaFilename'], 'UTF-8'), 200, 'clipping never cuts an emoji');
+same(lh_text_length_via(lh_build_report($long)['mediaFilename']), 200, 'clipping never cuts an emoji');
 
 $enc = lh_encode_report(lh_build_report(fixture('playing-sequence-and-media'), array('title' => 'Carol of the Bells', 'artist' => 'Mannheim Steamroller')));
 same(json_decode($enc, true)['mediaTitle'], 'Carol of the Bells', 'report encodes to JSON');
@@ -117,9 +120,12 @@ function harness($fixtureName, &$posts, $reply)
     $cur->fixture = $fixtureName;
     $cur->reply = $reply;
     $cur->tagCalls = 0;
+    $cur->tags = array('title' => 'Tagged', 'artist' => 'Artist'); // null means FPP gave no real answer
+    $cur->status = null; // set to an array to use that instead of a fixture
     $io = array(
-        'status' => function () use ($cur) { return $cur->fixture === null ? null : fixture($cur->fixture); },
-        'tags' => function ($file) use ($cur) { $cur->tagCalls++; return array('title' => 'Tagged', 'artist' => 'Artist'); },
+        'status' => function () use ($cur) { return $cur->status !== null ? $cur->status : ($cur->fixture === null ? null : fixture($cur->fixture)); },
+        'tags' => function ($file) use ($cur) { $cur->tagCalls++; return $cur->tags; },
+        'rand' => function () { return 0.5; }, // no spread in the backoff, so the waits are exact
         'post' => function ($key, $json) use ($cur, &$posts) {
             $posts[] = array('key' => $key, 'body' => json_decode($json, true));
             return $cur->reply;
@@ -150,11 +156,13 @@ check(strpos(file_get_contents(lh_file('status.json')), $KEY) === false, 'status
 $mode = substr(sprintf('%o', fileperms(lh_file('config.json'))), -4);
 same($mode, '0600', 'config file is 0600');
 
-// Same song, 5 seconds later: nothing. After 30 seconds: heartbeat. Tags are not looked up again.
+// Same song, 5 seconds later: nothing. After 20 seconds: heartbeat. Tags are not looked up again.
 lh_tick($S, 1010, $io);
-same(count($posts), 1, 'no resend inside 30 seconds');
-lh_tick($S, 1035, $io);
-same(count($posts), 2, 'heartbeat at 30 seconds');
+same(count($posts), 1, 'no resend inside 20 seconds');
+lh_tick($S, 1024, $io);
+same(count($posts), 1, 'still none at 19 seconds');
+lh_tick($S, 1025, $io);
+same(count($posts), 2, 'heartbeat at 20 seconds');
 same($cur->tagCalls, 1, 'tags cached per file');
 
 // A new song sends immediately.
@@ -527,9 +535,10 @@ $fb = lh_build_feedback('hello there', '', array('log' => $bigLog), true);
 check(strlen($fb['context']['log']) <= 8000 && substr($fb['context']['log'], -3) === '...', 'feedback: the log is cut to 8000 characters from the end');
 check(strpos($fb['context']['log'], 'a line that is 30 chars long...') === 0, 'feedback: a cut log starts on a whole line');
 same(lh_text_length_via(lh_build_feedback(str_repeat("\u{1F384}", 3000), '', array(), false)['message']), 2000, 'feedback: a long message is clipped to 2000 characters');
+// FPP's PHP image ships without mbstring, so count characters the way the plugin does.
 function lh_text_length_via($s)
 {
-    return mb_strlen($s, 'UTF-8');
+    return (int) preg_match_all('/./su', $s);
 }
 
 // Results shown to the owner.
@@ -607,6 +616,284 @@ putenv('LOGDIR');
 @unlink(lh_file('status.json'));
 unpair();
 
+/* ---------- 0.4.1 hardening ---------- */
+
+// The heartbeat leaves room for two lost posts before Light Hunt calls the sender stale (60 s).
+same(\LightHunt\LH_HEARTBEAT_SECONDS, 20, 'heartbeat is 20 seconds');
+same(LH_VERSION, '0.4.1', 'plugin version');
+
+// Intervals run on the monotonic clock: a wall clock that steps back (NTP on a Pi with no RTC) changes nothing.
+pair($KEY);
+$posts = array();
+list($cur, $io) = harness('playing-sequence-and-media', $posts, $ok);
+$S = lh_new_state();
+lh_tick($S, 5000, $io, 100);
+same(count($posts), 1, 'mono: first tick sends');
+lh_tick($S, 100, $io, 125); // the wall clock stepped back an hour and more; 25 real seconds passed
+same(count($posts), 2, 'mono: a wall clock stepping back does not stall the heartbeat');
+lh_tick($S, 9999999, $io, 130); // the wall clock jumped forward; 5 real seconds passed
+same(count($posts), 2, 'mono: a wall clock jumping forward does not fire early');
+same(lh_read_json('status.json')['lastReportAt'], 100, 'mono: the owner sees wall-clock time');
+$cur->reply = array('code' => 503, 'json' => null, 'retryAfter' => null);
+$S = lh_new_state();
+$posts = array();
+lh_tick($S, 5000, $io, 100);   // fails, waits 5
+lh_tick($S, 1, $io, 104);
+same(count($posts), 1, 'mono: backoff is not shortened by a wall clock step back');
+lh_tick($S, 99999, $io, 105);
+same(count($posts), 2, 'mono: backoff ends on monotonic time');
+
+// Only real answers are remembered for tags. A timeout or 5xx from FPP is asked again after a minute.
+same(\LightHunt\lh_fpp_tags('a.mp3'), null, 'tags: no answer from FPP is null, not "no tags"');
+$posts = array();
+list($cur, $io) = harness('playing-sequence-and-media', $posts, $ok);
+$cur->tags = null;
+$S = lh_new_state();
+lh_tick($S, 9000, $io, 9000);
+same($cur->tagCalls, 1, 'tags: first look-up');
+check(!isset($posts[0]['body']['mediaTitle']), 'tags: reported without tags while FPP has no answer');
+lh_tick($S, 9020, $io, 9020);
+lh_tick($S, 9040, $io, 9040);
+same($cur->tagCalls, 1, 'tags: a failed look-up is not repeated inside a minute');
+$cur->tags = array('title' => 'Tagged', 'artist' => 'Artist');
+lh_tick($S, 9060, $io, 9060);
+same($cur->tagCalls, 2, 'tags: tried again after a minute');
+same($posts[count($posts) - 1]['body']['mediaTitle'], 'Tagged', 'tags: the retry reaches the report');
+lh_tick($S, 9080, $io, 9080);
+same($cur->tagCalls, 2, 'tags: a real answer is remembered');
+$cur->tags = array('title' => '', 'artist' => ''); // a file with no tags is a real answer too
+$cur->fixture = 'playing-media-only';
+lh_tick($S, 9100, $io, 9100);
+lh_tick($S, 9120, $io, 9120);
+lh_tick($S, 9140, $io, 9140);
+same($cur->tagCalls, 3, 'tags: "no tags" is remembered for a file');
+
+// 200 must say ok:true. A proxy or login page answering 200 is not Light Hunt.
+foreach (array(array('code' => 200, 'json' => null), array('code' => 200, 'json' => array('ok' => false)), array('code' => 200, 'json' => array('message' => 'ok'))) as $i => $bad) {
+    $posts = array();
+    list($cur, $io) = harness('playing-sequence-and-media', $posts, $bad + array('retryAfter' => null));
+    $S = lh_new_state();
+    lh_tick($S, 100, $io);
+    same(lh_read_json('status.json')['result'], 'offline', "200 without ok:true #$i is not Live");
+    same(lh_read_json('status.json')['reason'], 'bad_reply', "200 without ok:true #$i has its own reason");
+    same(lh_read_json('status.json')['lastReportAt'], null, "200 without ok:true #$i is not counted as a report");
+    lh_tick($S, 102, $io);
+    same(count($posts), 1, "200 without ok:true #$i backs off");
+}
+check(strpos(lh_reason_text('bad_reply', 1), 'Something other than Light Hunt answered') === 0, 'bad_reply has a sentence');
+$cur->reply = $ok;
+lh_tick($S, 200, $io);
+same(lh_read_json('status.json')['result'], 'ok', 'a real answer clears bad_reply');
+
+// Retry-After is clamped to 10 minutes and the failure backoff is spread by 20%.
+same(lh_retry_after(null), 2, 'retry-after: missing is 2 seconds');
+same(lh_retry_after(0), 2, 'retry-after: at least 2');
+same(lh_retry_after(30), 30, 'retry-after: honoured');
+same(lh_retry_after(99999), 600, 'retry-after: at most 10 minutes');
+same(lh_retry_after(-5), 2, 'retry-after: negative is 2');
+$cur->reply = array('code' => 429, 'json' => null, 'retryAfter' => 99999);
+$S = lh_new_state();
+$posts = array();
+lh_tick($S, 3000, $io);
+lh_tick($S, 3599, $io);
+same(count($posts), 1, 'retry-after: a huge value still waits');
+lh_tick($S, 3600, $io);
+same(count($posts), 2, 'retry-after: but no longer than 10 minutes');
+same(lh_backoff(1, 0.0), 4, 'backoff: first wait spread low');
+same(lh_backoff(1, 1.0), 6, 'backoff: first wait spread high');
+same(lh_backoff(1, 0.5), 5, 'backoff: first wait at the middle');
+same(lh_backoff(5, 0.0), 48, 'backoff: capped wait spread low');
+same(lh_backoff(5, 1.0), 72, 'backoff: capped wait spread high');
+same(lh_backoff(9, 0.5), 60, 'backoff: stays at the cap');
+same(lh_backoff(0, 0.5), 5, 'backoff: zero failures counts as the first');
+$spread = array();
+for ($i = 0; $i < 200; $i++) {
+    $spread[lh_backoff(3)] = true;
+}
+check(min(array_keys($spread)) >= 16 && max(array_keys($spread)) <= 24 && count($spread) > 2, 'backoff: random spread stays within 20% and varies');
+
+// A song restarting (a loop of one song, or the same song twice) is sent at once, though its signature did not change.
+$posts = array();
+list($cur, $io) = harness('playing-sequence-and-media', $posts, $ok);
+$st = fixture('playing-sequence-and-media');
+$cur->status = $st;
+$S = lh_new_state();
+lh_tick($S, 7000, $io);
+same(count($posts), 1, 'restart: first send');
+$st['seconds_played'] = '83';
+$cur->status = $st;
+lh_tick($S, 7005, $io);
+same(count($posts), 1, 'restart: playing on sends nothing');
+$st['seconds_played'] = '2';
+$cur->status = $st;
+lh_tick($S, 7010, $io);
+same(count($posts), 2, 'restart: seconds played dropping by more than 5 sends at once');
+$st['seconds_played'] = '7';
+$cur->status = $st;
+lh_tick($S, 7015, $io);
+$st['seconds_played'] = '4';
+$cur->status = $st;
+lh_tick($S, 7020, $io);
+same(count($posts), 2, 'restart: a dip of 3 seconds is not a restart');
+// A restart that arrives while sending is backing off is not forgotten.
+$st['seconds_played'] = '90';
+$cur->status = $st;
+lh_tick($S, 7021, $io);
+$cur->reply = array('code' => 503, 'json' => null, 'retryAfter' => null);
+$st['seconds_played'] = '1';
+$cur->status = $st;
+lh_tick($S, 7022, $io);          // restart, the post fails, waits 5
+$cur->reply = $ok;
+$before = count($posts);
+$st['seconds_played'] = '6';
+$cur->status = $st;
+lh_tick($S, 7027, $io);
+same(count($posts), $before + 1, 'restart: retried after the backoff');
+
+// Multisync remote: sends nothing, says why, and sends again the moment it is a player.
+$posts = array();
+list($cur, $io) = harness('multisync-remote', $posts, $ok);
+$S = lh_new_state();
+lh_tick($S, 100, $io);
+lh_tick($S, 130, $io);
+same(count($posts), 0, 'remote: a multisync remote sends nothing');
+same(lh_read_json('status.json')['result'], 'remote', 'remote: status says remote');
+same(lh_read_json('status.json')['reason'], 'remote', 'remote: with a reason');
+same(lh_reason_text('remote', 1), 'This player is a multisync remote. Pair the master player instead.', 'remote: message');
+check(lh_fpp_is_remote(fixture('multisync-remote')) && !lh_fpp_is_remote(fixture('playing-sequence-and-media')) && !lh_fpp_is_remote(array()), 'remote: only mode_name remote counts');
+$cur->fixture = 'playing-sequence-and-media';
+lh_tick($S, 135, $io);
+same(count($posts), 1, 'remote: becoming a player sends at once');
+same(substr_count((string) file_get_contents(lh_log_file()), 'multisync remote, so it sends nothing'), 1, 'remote: logged once');
+
+// A copied SD card: the hardware id differs from the one the pairing pinned.
+same(lh_fpp_uuid(array('uuid' => ' M1-00000000 ')), 'M1-00000000', 'uuid: trimmed');
+same(lh_fpp_uuid(array('uuid' => 'Unknown')), null, 'uuid: "Unknown" is no id');
+same(lh_fpp_uuid(array('uuid' => '')), null, 'uuid: empty is no id');
+same(lh_fpp_uuid(array()), null, 'uuid: missing is no id');
+$posts = array();
+list($cur, $io) = harness('playing-sequence-and-media', $posts, $ok);
+lh_write_json('config.json', array('key' => $KEY, 'displayId' => 1, 'displayName' => 'x', 'pairedAt' => 'x', 'uuid' => 'M1-OTHER'));
+$S = lh_new_state();
+lh_tick($S, 100, $io);
+lh_tick($S, 130, $io);
+same(count($posts), 0, 'clone: a different hardware id sends nothing');
+same(lh_read_json('status.json')['result'], 'cloned', 'clone: status says cloned');
+same(lh_reason_text('cloned', 1), 'This looks like a copy of another player\'s SD card. Unpair and pair this player again.', 'clone: message');
+same(lh_config()['uuid'], 'M1-OTHER', 'clone: the pinned id is not overwritten');
+same(substr_count((string) file_get_contents(lh_log_file()), 'looks like a copy of another player'), 1, 'clone: logged once');
+// Paired before 0.4.1 (no id stored): the first id seen is adopted, and sending goes on.
+lh_write_json('config.json', array('key' => $KEY, 'displayId' => 1, 'displayName' => 'x', 'pairedAt' => 'x'));
+$S = lh_new_state();
+lh_tick($S, 200, $io);
+same(count($posts), 1, 'clone: an older pairing with no id sends');
+same(lh_config()['uuid'], 'M1-00000000', 'clone: an older pairing adopts the first id it sees');
+same(lh_config()['key'], $KEY, 'clone: adopting keeps the key');
+// FPP with no usable id: nothing to compare, sends normally.
+$noId = fixture('playing-sequence-and-media');
+$noId['uuid'] = 'Unknown';
+$cur->status = $noId;
+lh_write_json('config.json', array('key' => $KEY, 'displayId' => 1, 'displayName' => 'x', 'pairedAt' => 'x', 'uuid' => 'M1-OTHER'));
+$S = lh_new_state();
+$posts = array();
+lh_tick($S, 300, $io);
+same(count($posts), 1, 'clone: no id from FPP means no check');
+$cur->status = null;
+unpair();
+
+// A bad-UTF-8 name (Latin-1) must not blank the status file, the report or an FPP answer.
+$latin = "Caf\xE9.mp3";
+lh_write_json('status.json', array('song' => $latin, 'result' => 'ok'), 0644);
+check(lh_read_json('status.json') !== null && strpos(lh_read_json('status.json')['song'], 'Caf') === 0, 'utf8: a Latin-1 name still writes status.json');
+$enc = lh_encode_report(array('source' => 'fpp', 'state' => 'playing', 'mediaFilename' => $latin));
+check($enc !== false && json_decode($enc, true)['mediaFilename'] === "Caf\u{FFFD}.mp3", 'utf8: a Latin-1 name still encodes the report');
+$probe = $tmp . '/latin1.json';
+file_put_contents($probe, "{\"status_name\":\"playing\",\"current_song\":\"$latin\"}");
+$r = lh_http('GET', 'file://' . $probe); // curl reports code 0 for file://, but the body is still decoded
+check(isset($r['json']['current_song']) && $r['json']['current_song'] === "Caf\u{FFFD}.mp3", 'utf8: an FPP answer with a Latin-1 name still decodes');
+unlink($probe);
+
+// A tick that throws is logged once, then once more when it clears.
+pair($KEY);
+$boom = array('status' => function () { throw new \RuntimeException('disk gone'); }, 'tags' => null, 'post' => null);
+$S = lh_new_state();
+for ($i = 0; $i < 5; $i++) {
+    lh_safe_tick($S, 100 + $i * 5, $boom);
+}
+same(substr_count((string) file_get_contents(lh_log_file()), 'Poller error: disk gone'), 1, 'errors: a repeated error is logged once');
+$posts = array();
+list($cur, $io) = harness('playing-sequence-and-media', $posts, $ok);
+lh_safe_tick($S, 200, $io);
+lh_safe_tick($S, 205, $io);
+same(substr_count((string) file_get_contents(lh_log_file()), 'Poller error cleared'), 1, 'errors: logged once more when it clears');
+$boom2 = array('status' => function () { throw new \RuntimeException('other'); }, 'tags' => null, 'post' => null);
+lh_safe_tick($S, 210, $boom2);
+lh_safe_tick($S, 215, $boom);
+same(substr_count((string) file_get_contents(lh_log_file()), 'Poller error: disk gone'), 2, 'errors: a different error is logged');
+unpair();
+
+// status.json lives in RAM when /dev/shm is there, and the settings page reads it from the same place.
+$shm = $tmp . '/shm';
+@unlink(lh_file('status.json'));
+same(lh_status_path(), lh_data_dir() . '/status.json', 'status path: the data folder when there is no /dev/shm');
+@mkdir($shm, 0775, true);
+putenv('LIGHTHUNT_SHM_DIR=' . $shm);
+same(lh_status_path(), $shm . '/lighthunt-fpp-plugin-status.json', 'status path: RAM when /dev/shm is there');
+pair($KEY);
+$posts = array();
+list($cur, $io) = harness('playing-sequence-and-media', $posts, $ok);
+$S = lh_new_state();
+lh_tick($S, time(), $io);
+check(is_file($shm . '/lighthunt-fpp-plugin-status.json') && !is_file(lh_data_dir() . '/status.json'), 'status path: written in RAM, not on the SD card');
+// logind empties /dev/shm for fpp when an SSH session as fpp ends. The next tick writes it back, not 60 seconds later.
+@unlink($shm . '/lighthunt-fpp-plugin-status.json');
+lh_tick($S, time(), $io, 2);
+check(is_file($shm . '/lighthunt-fpp-plugin-status.json'), 'status path: a deleted RAM file is written again on the next tick');
+lh_write_json('config.json', array('key' => $KEY, 'displayId' => 12326, 'displayName' => 'Elm Street', 'pairedAt' => gmdate('c', time() - 100)));
+same(lighthuntfpppluginStatus()['result'], 'ok', 'status path: the page reads it from RAM');
+lighthuntfpppluginUnpair();
+check(!is_file($shm . '/lighthunt-fpp-plugin-status.json'), 'status path: unpair removes it from RAM');
+putenv('LIGHTHUNT_SHM_DIR=' . $tmp . '/no-shm');
+
+// The page API shows the clone and remote messages.
+lh_write_json('config.json', array('key' => $KEY, 'displayId' => 12326, 'displayName' => 'Elm Street', 'pairedAt' => gmdate('c', time() - 100)));
+lh_write_json('status.json', array('result' => 'cloned', 'reason' => 'cloned', 'updatedAt' => time()), 0644);
+$s = lighthuntfpppluginStatus();
+same($s['result'], 'cloned', 'api: cloned result passes through');
+check(strpos((string) $s['reason'], 'copy of another player\'s SD card') !== false, 'api: cloned reason is a sentence');
+lh_write_json('status.json', array('result' => 'remote', 'reason' => 'remote', 'updatedAt' => time()), 0644);
+check(strpos((string) lighthuntfpppluginStatus()['reason'], 'multisync remote') !== false, 'api: remote reason is a sentence');
+unpair();
+@unlink(lh_file('status.json'));
+
+// Pairing: a pairing that could not be saved is not "paired". Light Hunt hands the key out once, so it waits in pending.json.
+$pairedReply = function ($path, $body, $key = null) use ($KEY) {
+    return array('code' => 200, 'json' => array('status' => 'paired', 'key' => $KEY, 'display' => array('id' => 12326, 'name' => 'Elm Street')), 'retryAfter' => null, 'serverTime' => null);
+};
+$noFpp = function () { return null; };
+$fppWithId = function () { return fixture('playing-sequence-and-media'); };
+unpair();
+lh_write_json('pending.json', array('code' => '123456', 'deviceSecret' => 's', 'expiresAt' => gmdate('c', time() + 300), 'deadline' => time() + 300, 'lastCheck' => 0));
+@mkdir(lh_file('config.json')); // a folder where the file goes: the rename cannot succeed, like a full or read-only card
+$r = lighthuntfpppluginPairCheckWith($pairedReply, $fppWithId);
+same($r['status'], 'pending', 'pair: an unsaved pairing is still pending');
+same($r['warning'], lh_cant_save_message(), 'pair: and says the player can\'t save');
+check(is_file(lh_file('pending.json')), 'pair: pending.json is kept');
+check(!is_file(lh_file('config.json')), 'pair: no config was written');
+check(count(glob(lh_data_dir() . '/*.tmp')) === 0, 'pair: a failed write leaves no temp file behind');
+$never = function () { throw new \RuntimeException('must not ask Light Hunt again'); };
+rmdir(lh_file('config.json')); // the card recovers
+$r = lighthuntfpppluginPairCheckWith($never, $fppWithId);
+same($r, array('status' => 'paired'), 'pair: the next try saves the key it already holds');
+same(lh_config()['key'], $KEY, 'pair: the saved key is right');
+same(lh_config()['uuid'], 'M1-00000000', 'pair: the hardware id is pinned at pairing');
+check(!is_file(lh_file('pending.json')), 'pair: pending.json is removed once saved');
+unpair();
+lh_write_json('pending.json', array('code' => '123456', 'deviceSecret' => 's', 'expiresAt' => gmdate('c', time() + 300), 'deadline' => time() + 300, 'lastCheck' => 0));
+same(lighthuntfpppluginPairCheckWith($pairedReply, $noFpp), array('status' => 'paired'), 'pair: a normal pairing still works');
+check(!isset(lh_config()['uuid']), 'pair: no hardware id from FPP means none pinned (the poller adopts one later)');
+unpair();
+
 /* ---------- Lifecycle: nothing creates the data folder, nothing restarts the poller ---------- */
 
 $bare = sys_get_temp_dir() . '/lh-bare-' . getmypid();
@@ -639,7 +926,6 @@ unlink(lh_file('stopped'));
 putenv('LIGHTHUNT_FPP_URL=http://127.0.0.1:1');
 lh_start_poller();
 check(!lh_daemon_running(), 'the page does not start the poller when fppd is not answering');
-putenv('LIGHTHUNT_FPP_URL');
 unpair();
 
 /* ---------- Log never holds a key ---------- */

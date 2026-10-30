@@ -3,7 +3,7 @@
  * Light Hunt background poller. Started by scripts/postStart.sh, stopped by scripts/preStop.sh.
  *
  * Every 5 seconds it reads Falcon Player's local status. When the song changes, and at least every
- * 30 seconds, it posts what is playing to Light Hunt. It runs as its own process, so a slow or
+ * 20 seconds, it posts what is playing to Light Hunt. It runs as its own process, so a slow or
  * missing network can never hold up fppd. Until you pair it, it only waits.
  */
 
@@ -13,7 +13,7 @@ use function LightHunt\lh_file;
 use function LightHunt\lh_log;
 use function LightHunt\lh_new_state;
 use function LightHunt\lh_orphaned;
-use function LightHunt\lh_tick;
+use function LightHunt\lh_safe_tick;
 use const LightHunt\LH_POLL_SECONDS;
 use const LightHunt\LH_VERSION;
 
@@ -51,10 +51,9 @@ $io = array(
 
 $state = lh_new_state();
 while (!lh_orphaned(__FILE__)) {
-    try {
-        lh_tick($state, time(), $io);
-    } catch (\Throwable $e) {
-        lh_log('Poller error: ' . $e->getMessage());
-    }
+    // Wall time is for what the owner reads. Every interval runs on the monotonic clock, because a Pi
+    // with no clock chip steps its wall clock (sometimes backwards) when NTP first answers.
+    // (hrtime is a float on a 32-bit Pi, so divide rather than intdiv.)
+    lh_safe_tick($state, time(), $io, (int) (hrtime(true) / 1e9));
     sleep(LH_POLL_SECONDS);
 }

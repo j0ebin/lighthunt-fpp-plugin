@@ -10,6 +10,13 @@ if ! command -v php >/dev/null 2>&1; then
     exit 1
 fi
 
+# The poller talks to Light Hunt through PHP's curl extension. Say so here, not as a silent failure later.
+if ! php -r 'exit(function_exists("curl_init") ? 0 : 1);' >/dev/null 2>&1; then
+    echo "The Light Hunt plugin needs PHP's curl extension, and this player's PHP does not have it." >&2
+    echo "Install it (on Falcon Player: sudo apt install php-curl), then install the plugin again." >&2
+    exit 1
+fi
+
 # An update must replace a poller that is already running, or it keeps running the old code.
 PATTERN="$(printf '%s' "$PLUGIN_DIR/lighthunt-daemon.php" | sed 's/[][\.*^$+?(){}|]/\\&/g')"
 WAS_RUNNING=0
