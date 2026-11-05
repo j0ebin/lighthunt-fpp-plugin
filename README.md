@@ -1,6 +1,6 @@
 # Light Hunt for Falcon Player
 
-Shows the song your Falcon Player (FPP) show is playing on your display page at [lightshunt.com](https://lightshunt.com). Visitors see the title, the artist and the time left. The plugin only reads what is playing. It never controls your show.
+Shows the song your Falcon Player (FPP) show is playing on your display page at [lightshunt.com](https://lightshunt.com). Visitors see the title, the artist and the time left. Unless you turn on song voting, the plugin only reads what is playing and never controls your show.
 
 This folder is laid out as the root of an FPP plugin repository (`lighthunt-fpp-plugin`).
 
@@ -26,6 +26,20 @@ FPP 9 installs follow the `fpp9` branch, which only gets commits tested on FPP 9
 
 A display has one sender at a time. Pairing a new FPP, or the Windows Relay for Light-O-Rama, replaces the old one.
 
+## Song voting (off by default)
+
+Visitors pick the next song on your display page, and FPP plays it next. It needs two switches: **Let visitors pick the next song** on the plugin page, and song voting in Show tools on lightshunt.com. Both start off.
+
+While both are on, the poller:
+
+1. Sends the main section of the running playlist to `POST /api/relay/vote/catalog` when the playlist changes and every 10 minutes: one row per sequence or media entry, `{ "name": "Wizards in Winter.fseq", "media": "Wizards in Winter.mp3" }`. Pauses, scripts, commands, sub-playlists and the lead-in and lead-out are left out.
+2. Opens a round (`POST /api/relay/vote/round`) once a song of 60 seconds or more is playing with over 30 seconds left.
+3. Claims the winner (`POST /api/relay/vote/claim`) with 20 seconds left.
+4. Runs FPP's own `Insert Playlist After Current` command for that one entry (`POST /api/command`, args `[playlist, n, n, "false"]`). If the winner already plays next, it inserts nothing. The playing song is never cut off.
+5. Reports `queued`, `rejected` or `missing`, then `played` or `not_played` when the next song starts (`POST /api/relay/vote/result`).
+
+It skips shuffled playlists. These are the same endpoints the Light-O-Rama Relay uses. The plugin page shows the state: off, waiting for Light Hunt, shuffled, turn it on in Show tools, paused, or live. Turning the switch off stops it within one poll; unpairing also removes the switch file `voting.json`.
+
 ## Unpair and uninstall
 
 - **Unpair** on the plugin page removes the key from this player. To also end the link on Light Hunt, press **Unpair** under **Show what's playing** on your display page. If you unpair there first, the plugin notices within 30 seconds and offers to pair again.
@@ -49,7 +63,7 @@ Only after you pair. Every 5 seconds the plugin reads `http://127.0.0.1/api/fppd
   "upNext": [
     { "name": "Wizards in Winter.fseq", "mediaFilename": "Wizards in Winter.mp3", "mediaTitle": "Wizards in Winter", "mediaArtist": "Trans-Siberian Orchestra" }
   ],
-  "relayVersion": "0.4.1"
+  "relayVersion": "0.5.0"
 }
 ```
 
@@ -59,7 +73,7 @@ Only after you pair. Every 5 seconds the plugin reads `http://127.0.0.1/api/fppd
 - `upNext` lists up to 3 songs that come next in that playlist, read from FPP's own `/api/playlist/<name>?mergeSubs=1` at most once a minute. Each has the sequence and/or audio file name and, when the audio file has them, its title and artist tags. It walks forward from FPP's current position, skips pauses, scripts and commands, loops the main section when the playlist repeats, and is left out for shuffled playlists or when the playlist on disk doesn't match what FPP is running.
 - `relayVersion` is the plugin version. The pairing step sends the plugin version too, then the code check. The now-playing report does not include the FPP version.
 
-Everything above, the playlist name included, appears on your public Light Hunt display page. Nothing else leaves the player: no sequences, audio files, network settings, location or passwords. Light Hunt sends back only `{ "ok": true, "viewers": 3 }`.
+Everything above, the playlist name included, appears on your public Light Hunt display page. Nothing else leaves the player: no sequences, audio files, network settings, location or passwords. Light Hunt sends back only `{ "ok": true, "viewers": 3 }`, plus `"voting": true` or `"votingPaused": true` when song voting is on in Show tools.
 
 ### Feedback
 
@@ -71,7 +85,7 @@ The **Send feedback** card on the plugin page posts to `https://lightshunt.com/a
   "message": "What you typed",
   "email": "only if you typed one",
   "context": {
-    "pluginVersion": "0.4.1",
+    "pluginVersion": "0.5.0",
     "fppVersion": "10.2",
     "fppBranch": "master",
     "phpVersion": "8.2.12",

@@ -2,7 +2,7 @@
   <h1 class="h3 mb-3">Light Hunt: show what's playing</h1>
   <p class="text-body-secondary">
     Shows the song Falcon Player is playing on your display page at lightshunt.com.
-    Falcon Player runs your lights as usual; this plugin only reads what is playing.
+    Falcon Player runs your lights as usual. Unless you turn on song voting below, this plugin only reads what is playing.
   </p>
 
   <div id="lh-error" class="alert alert-danger d-none" role="alert"></div>
@@ -45,6 +45,25 @@
       <p class="form-text mt-2">
         Unpair removes the key from this device. To also end the link on Light Hunt, press
         <em>Unpair</em> under <em>Show what's playing</em> on your display page in edit mode.
+      </p>
+    </div>
+  </div>
+
+  <div id="lh-voting" class="card mb-3 d-none">
+    <div class="card-body">
+      <h2 class="h5 card-title">Song voting</h2>
+      <p>
+        Visitors at your display vote for the song that plays next. Near the end of each song, this plugin asks
+        Light Hunt for the winner and Falcon Player plays it after the current song finishes. A song is never cut off.
+      </p>
+      <div class="form-check form-switch mb-2">
+        <input class="form-check-input" type="checkbox" role="switch" id="lh-vote-on">
+        <label class="form-check-label" for="lh-vote-on">Let visitors pick the next song</label>
+      </div>
+      <p class="mb-2">Voting: <span id="lh-vote-state"></span></p>
+      <p class="form-text mb-0">
+        Then finish in <a id="lh-vote-tools" href="https://lightshunt.com/for-owners/show" target="_blank" rel="noopener noreferrer">Show tools on Light Hunt</a>:
+        match each song to your setlist and turn on <em>Let visitors vote</em>. Shuffled playlists get no ballots.
       </p>
     </div>
   </div>
@@ -122,6 +141,16 @@
     remote: ['Stopped: multisync remote', 'text-bg-warning']
   };
 
+  var VOTING = {
+    off: 'Off on this player.',
+    waiting: 'On. Waiting for a playlist to play.',
+    shuffled: 'On, but this playlist is shuffled, so no ballots open. Turn off shuffle to use voting.',
+    setup: 'On. Light Hunt has your song list. Turn on voting in Show tools.',
+    paused: 'Paused on Light Hunt. Unpause it in Show tools.',
+    live: 'Live. A ballot opens with each song.'
+  };
+  var voteBusy = false;
+
   function render(s) {
     $('lh-version').textContent = s.version;
     var revoked = s.paired && s.result === 'revoked';
@@ -152,7 +181,11 @@
       $('lh-song').textContent = nowText;
       $('lh-last').textContent = ago(s.lastReportAt);
       $('lh-viewers').textContent = s.viewers === null || s.viewers === undefined ? 'unknown' : s.viewers;
+      if (!voteBusy) { $('lh-vote-on').checked = !!s.votingEnabled; }
+      $('lh-vote-state').textContent = !s.votingEnabled ? VOTING.off : (VOTING[s.voting] || 'Starting...');
+      if (d.id) { $('lh-vote-tools').href = 'https://lightshunt.com/for-owners/show?display=' + encodeURIComponent(d.id); }
     }
+    show('lh-voting', s.paired && !revoked);
     // Keep polling while a code is waiting or the plugin is paired.
     clearTimeout(timer);
     if (s.pending) { timer = setTimeout(checkPair, 6000); }
@@ -188,6 +221,18 @@
   $('lh-unpair').addEventListener('click', function () {
     if (!confirm('Remove the Light Hunt pairing from this Falcon Player?')) { return; }
     call('POST', 'unpair').then(function () { fail(''); refresh(); }).catch(function () { fail('Could not unpair. Try again.'); });
+  });
+
+  $('lh-vote-on').addEventListener('change', function () {
+    var on = $('lh-vote-on').checked;
+    voteBusy = true;
+    fail('');
+    call('POST', 'voting', { enabled: on }).then(function (r) {
+      if (!r.ok) { fail(r.error); $('lh-vote-on').checked = !on; }
+    }).catch(function () {
+      fail('Could not change song voting. Try again.');
+      $('lh-vote-on').checked = !on;
+    }).then(function () { voteBusy = false; refresh(); });
   });
 
   // Feedback: the browser sends only the words and the log checkbox. The context is built on the player.

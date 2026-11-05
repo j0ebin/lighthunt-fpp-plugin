@@ -5,6 +5,9 @@
  * Every 5 seconds it reads Falcon Player's local status. When the song changes, and at least every
  * 20 seconds, it posts what is playing to Light Hunt. It runs as its own process, so a slow or
  * missing network can never hold up fppd. Until you pair it, it only waits.
+ *
+ * If the owner turns on song voting in the plugin page, it also sends the playlist's songs to Light Hunt,
+ * and near the end of each song asks for the visitors' pick and tells FPP to play it next.
  */
 
 require_once __DIR__ . '/lib/lighthunt.php';
@@ -47,6 +50,12 @@ $io = array(
     'post' => function ($key, $json) {
         return \LightHunt\lh_post_json('/api/now-playing', $json, $key);
     },
+    // Song voting, used only after the owner turns it on in the plugin page.
+    'vote' => 'LightHunt\\lh_vote_post',
+    'playlistRaw' => function ($name) {
+        return \LightHunt\lh_fpp_playlist($name, false);
+    },
+    'command' => 'LightHunt\\lh_fpp_insert_next',
 );
 
 $state = lh_new_state();

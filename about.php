@@ -2,7 +2,8 @@
   <h1 class="h3 mb-3">Light Hunt: what this sends</h1>
   <p>
     This plugin tells <strong>lightshunt.com</strong> which song your show is playing, so visitors see it on your display page.
-    It does nothing until you pair it, and it never controls your show. The one other thing it can send is feedback, and only when you press <em>Send</em> on the plugin page (see below).
+    It does nothing until you pair it. The one other thing it can send is feedback, and only when you press <em>Send</em> on the plugin page (see below).
+    It never controls your show unless you turn on song voting (see below).
   </p>
 
   <h2 class="h5">What leaves this device</h2>
@@ -14,7 +15,16 @@
     <li>Your pairing key, so Light Hunt knows which display the report is for.</li>
   </ul>
   <p><strong>What it sends, including the playlist name, appears on your public Light Hunt display page</strong>, where anyone who visits can see it.</p>
-  <p>Nothing else is sent while it runs. It sends nothing to anyone but lightshunt.com. It does not send your sequences, audio files, passwords, network settings or location.</p>
+  <p>Nothing else is sent while it runs, unless you turn on song voting (below). It sends nothing to anyone but lightshunt.com. It does not send your sequences, audio files, passwords, network settings or location.</p>
+
+  <h2 class="h5" id="voting">Song voting (off unless you turn it on)</h2>
+  <p>Song voting lets visitors pick the next song from your display page. It stays off until you turn it on twice: with the switch on the plugin page, and in Show tools on lightshunt.com. While it is on:</p>
+  <ul>
+    <li>The plugin also sends the sequence and audio file names in the running playlist, so Light Hunt can match them to your setlist and build a ballot.</li>
+    <li>Near the end of each song it asks Light Hunt which song won. If one did, it runs Falcon Player's own <em>Insert Playlist After Current</em> command for that one song, so it plays next. The song that is playing always finishes.</li>
+    <li>It then reports whether the winner played.</li>
+  </ul>
+  <p>Light Hunt can only choose a song from the playlist that is running. Voting skips shuffled playlists. Turn the switch off and the plugin stops sending the list and running the command at once.</p>
 
   <h2 class="h5" id="feedback">Send feedback</h2>
   <p>The <em>Send feedback</em> card on the plugin page sends a report to Light Hunt <strong>only when you press Send</strong>. Nothing is sent as you type, and <em>Show what's sent</em> on that card shows the details before you decide. A report contains:</p>

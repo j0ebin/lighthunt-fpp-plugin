@@ -12,7 +12,7 @@
 namespace LightHunt;
 
 const LH_REPO = 'lighthunt-fpp-plugin';
-const LH_VERSION = '0.4.1';
+const LH_VERSION = '0.5.0';
 const LH_KEY_RE = '/^lhr_[A-Za-z0-9_-]{43}$/';
 // Light Hunt calls a sender stale after 60 seconds (STALE_MS in api/_relay.ts), so this leaves room for two lost posts.
 const LH_HEARTBEAT_SECONDS = 20;
@@ -28,6 +28,15 @@ const LH_FEEDBACK_MIN = 5;
 const LH_FEEDBACK_MAX = 2000;
 const LH_LOG_LINES = 20;
 const LH_LOG_MAX = 8000;
+// Song voting (off unless the owner turns it on here). Same timings as the Light-O-Rama Relay.
+const LH_VOTE_MIN_SONG = 60;      // shorter songs get no ballot
+const LH_VOTE_OPEN_LEFT = 30;     // a ballot opens only with more than this many seconds left
+const LH_VOTE_CLAIM_LEFT = 20;    // ask for the winner this close to the end
+const LH_VOTE_OPEN_RETRY = 15;
+const LH_VOTE_RESULT_RETRY = 10;
+const LH_VOTE_CATALOG_SECONDS = 600;
+const LH_VOTE_MAX_ITEMS = 500;
+const LH_VOTE_TIMEOUT = 4;
 
 /* ---------- Paths, files, log ---------- */
 
@@ -417,11 +426,26 @@ function lh_fpp_tags($file)
     );
 }
 
-/** A playlist's entries with sub-playlists merged in, through FPP's own API. Null when FPP can't say. */
-function lh_fpp_playlist($name)
+/**
+ * A playlist's entries through FPP's own API. Null when FPP can't say. Merged, sub-playlists are spelled out
+ * (for Up next); unmerged, the entries are as saved, so their positions are the ones FPP's commands count.
+ */
+function lh_fpp_playlist($name, $merge = true)
 {
-    $r = lh_http('GET', lh_fpp_url() . '/api/playlist/' . rawurlencode($name) . '?mergeSubs=1', array(), null, 5);
+    $r = lh_http('GET', lh_fpp_url() . '/api/playlist/' . rawurlencode($name) . ($merge ? '?mergeSubs=1' : ''), array(), null, 5);
     return $r['code'] === 200 && is_array($r['json']) ? $r['json'] : null;
+}
+
+/**
+ * Plays entry $position (1-based, counted across lead-in, main and lead-out) of $playlist once, after the
+ * current item finishes, then FPP goes back to where it was. FPP's "Insert Playlist After Current" command,
+ * the same on FPP 8, 9 and 10. It never cuts off what is playing. True when FPP accepted it.
+ */
+function lh_fpp_insert_next($playlist, $position)
+{
+    $body = json_encode(array('command' => 'Insert Playlist After Current', 'args' => array((string) $playlist, (string) $position, (string) $position, 'false')));
+    $r = lh_http('POST', lh_fpp_url() . '/api/command', array('Content-Type: application/json'), $body, 5);
+    return $r['code'] === 200;
 }
 
 /**
@@ -605,6 +629,7 @@ function lh_new_state()
         'lastStatusBody' => null, 'lastStatusAt' => 0, 'badSig' => null, 'reason' => null,
         'lastPlayed' => null, 'restartPending' => false, 'notice' => null, 'lastError' => null,
         'playlistName' => null, 'playlistAt' => 0, 'playlist' => null,
+        'votingFlag' => 'off', 'vote' => lh_vote_state(),
     );
 }
 
@@ -764,6 +789,9 @@ function lh_tick(&$S, $now, $io, $mono = null)
             $S['badSig'] = null;
             $S['restartPending'] = false;
             $S['viewers'] = isset($r['json']['viewers']) ? (int) $r['json']['viewers'] : null;
+            // Song voting as the owner set it on Light Hunt: on, paused, or off (absent).
+            $S['votingFlag'] = isset($r['json']['voting']) && $r['json']['voting'] === true ? 'open'
+                : (isset($r['json']['votingPaused']) && $r['json']['votingPaused'] === true ? 'paused' : 'off');
         } elseif ($code === 401) {
             $S['rejected'] = $cfg['key'];
             lh_log('Light Hunt no longer accepts this pairing (the owner unpaired it). Pair again from the plugin page.');
@@ -791,6 +819,11 @@ function lh_tick(&$S, $now, $io, $mono = null)
         }
     }
 
+    // Song voting rides on the same tick, after the report, so it acts on the flag Light Hunt just sent.
+    // Skipped while Light Hunt is unreachable or the pairing was refused: those calls would fail too.
+    $voting = $S['rejected'] === $cfg['key'] || $S['lastOk'] === false ? (lh_voting_enabled() ? 'waiting' : 'off')
+        : lh_vote_tick($S, $fpp, $report, $cfg['key'], $io, $mono);
+
     $doc = array(
         'result' => $S['rejected'] === $cfg['key'] ? 'revoked' : ($S['lastOk'] === false ? 'offline' : 'ok'),
         'state' => $report['state'],
@@ -799,8 +832,285 @@ function lh_tick(&$S, $now, $io, $mono = null)
         'lastReportAt' => $S['lastReportAt'],
         'viewers' => $S['viewers'],
         'reason' => $S['lastOk'] === false ? $S['reason'] : null,
+        'voting' => $voting,
     );
     lh_write_status_if_needed($S, $now, $doc, $mono);
+}
+
+/* ---------- Song voting: visitors pick the next song. Off unless the owner turns it on in this plugin. ---------- */
+
+/** The owner's switch on the plugin page. Off when the file is missing. */
+function lh_voting_enabled()
+{
+    $v = lh_read_json('voting.json');
+    return is_array($v) && isset($v['enabled']) && $v['enabled'] === true;
+}
+
+function lh_vote_state()
+{
+    return array(
+        'sig' => null, 'played' => null, 'instance' => null,
+        'catalogFor' => null, 'catalogAt' => 0, 'catalogTry' => 0, 'catalogCount' => null,
+        'roundId' => null, 'openDone' => false, 'openTry' => 0, 'claimed' => false,
+        'queued' => null, 'inserted' => false, 'inWinner' => false,
+        'results' => array(), 'nextTry' => 0,
+    );
+}
+
+/**
+ * A playlist entry as a ballot song: ['name' => the sequence file, or the audio file for a media-only entry,
+ * 'media' => the audio file or null]. Null for pauses, commands, scripts, sub-playlists and the like.
+ */
+function lh_vote_row($e)
+{
+    $type = is_array($e) && isset($e['type']) ? (string) $e['type'] : '';
+    if (!in_array($type, array('both', 'sequence', 'media'), true)) {
+        return null;
+    }
+    $seq = $type !== 'media' && !empty($e['sequenceName']) ? trim(lh_clip($e['sequenceName'])) : '';
+    $media = $type !== 'sequence' && !empty($e['mediaName']) ? trim(lh_clip($e['mediaName'], 300)) : '';
+    $name = $seq !== '' ? $seq : trim(lh_clip($media));
+    return $name === '' ? null : array('name' => $name, 'media' => $media !== '' ? $media : null);
+}
+
+/** The songs of a playlist's main section, once each, for Light Hunt's ballot list. Pure. */
+function lh_vote_catalog_items($playlist)
+{
+    $main = is_array($playlist) && isset($playlist['mainPlaylist']) && is_array($playlist['mainPlaylist']) ? $playlist['mainPlaylist'] : array();
+    $items = array();
+    $seen = array();
+    foreach ($main as $e) {
+        $row = lh_vote_row($e);
+        if ($row === null || isset($seen[$row['name']])) {
+            continue;
+        }
+        $seen[$row['name']] = true;
+        $items[] = $row;
+        if (count($items) >= LH_VOTE_MAX_ITEMS) {
+            break;
+        }
+    }
+    return $items;
+}
+
+/** Where a song sits in the saved playlist: 1-based across lead-in, main and lead-out, as FPP's commands count. Main section only. Pure. */
+function lh_vote_position($playlist, $name)
+{
+    if (!is_array($playlist) || !isset($playlist['mainPlaylist']) || !is_array($playlist['mainPlaylist'])) {
+        return null;
+    }
+    $lead = isset($playlist['leadIn']) && is_array($playlist['leadIn']) ? count($playlist['leadIn']) : 0;
+    foreach (array_values($playlist['mainPlaylist']) as $i => $e) {
+        $row = lh_vote_row($e);
+        if ($row !== null && $row['name'] === trim((string) $name)) {
+            return $lead + $i + 1;
+        }
+    }
+    return null;
+}
+
+/** The position FPP plays after the current one on its own, or null at the end. Pure. */
+function lh_vote_next_position($st, $playlist)
+{
+    $pos = isset($st['current_playlist']['index']) ? (int) $st['current_playlist']['index'] : 0;
+    $lead = isset($playlist['leadIn']) && is_array($playlist['leadIn']) ? count($playlist['leadIn']) : 0;
+    $main = isset($playlist['mainPlaylist']) && is_array($playlist['mainPlaylist']) ? count($playlist['mainPlaylist']) : 0;
+    $out = isset($playlist['leadOut']) && is_array($playlist['leadOut']) ? count($playlist['leadOut']) : 0;
+    if ($pos < 1) {
+        return null;
+    }
+    $repeat = !empty($st['repeat_mode']) && (string) $st['repeat_mode'] !== '0';
+    if ($repeat && $main > 0 && $pos === $lead + $main) {
+        return $lead + 1;
+    }
+    return $pos < $lead + $main + $out ? $pos + 1 : null;
+}
+
+/** What the plugin page says about voting: off, shuffled, waiting, setup (Light Hunt has the list, voting is off there), paused or live. */
+function lh_vote_tick(&$S, $fpp, $report, $key, $io, $mono)
+{
+    if (!isset($io['vote'], $io['playlistRaw'], $io['command'])) {
+        return 'off';
+    }
+    $V = &$S['vote'];
+    // Results already owed go out even after voting is turned off, so Light Hunt's record of each round is right.
+    lh_vote_send_results($S, $key, $io, $mono);
+    if (!lh_voting_enabled()) {
+        $V['roundId'] = null;
+        $V['queued'] = null;
+        return 'off';
+    }
+
+    $playing = $report['state'] === 'playing';
+    $sig = $playing ? lh_signature($report) : null;
+    $played = lh_seconds(isset($fpp['seconds_played']) ? $fpp['seconds_played'] : null);
+    $left = lh_seconds(isset($fpp['seconds_remaining']) ? $fpp['seconds_remaining'] : null);
+    $newSong = $playing && ($sig !== $V['sig'] || ($played !== null && $V['played'] !== null && $played < $V['played'] - LH_RESTART_DROP));
+    $V['sig'] = $sig;
+    $V['played'] = $played;
+
+    if ($newSong) {
+        $here = array(isset($report['name']) ? $report['name'] : null, isset($report['mediaFilename']) ? $report['mediaFilename'] : null);
+        $V['inWinner'] = false;
+        if ($V['queued'] !== null) {
+            // The first song after a queued winner is the winner, or the show went another way.
+            $won = in_array($V['queued']['name'], $here, true);
+            lh_vote_owe($V, $V['queued']['roundId'], $won ? 'played' : 'not_played', $mono);
+            $V['inWinner'] = $won && $V['inserted'];
+            $V['queued'] = null;
+        }
+        $V['inserted'] = false;
+        $V['instance'] = 'fpp-' . bin2hex(random_bytes(8));
+        $V['roundId'] = null;
+        $V['openDone'] = false;
+        $V['openTry'] = 0;
+        $V['claimed'] = false;
+    }
+    if (!$playing) {
+        $V['roundId'] = null; // a stop or a pause between songs ends this song's round; Light Hunt expires it
+        return 'waiting';
+    }
+    if (!empty($fpp['random']) && (int) $fpp['random'] > 0) {
+        $V['roundId'] = null;
+        return 'shuffled'; // FPP picks the next song itself, so a winner could not be played next
+    }
+    $name = isset($report['showName']) ? $report['showName'] : null;
+    if ($name === null) {
+        return 'waiting';
+    }
+
+    // The ballot list: the running playlist's songs, sent when the playlist changes and every 10 minutes.
+    if (($V['catalogFor'] !== $name || $mono - $V['catalogAt'] >= LH_VOTE_CATALOG_SECONDS) && $mono >= $V['catalogTry'] && $mono >= $V['nextTry']) {
+        $items = lh_vote_catalog_items(call_user_func($io['playlistRaw'], $name));
+        if (!$items) {
+            $V['catalogTry'] = $mono + 60;
+        } else {
+            $r = call_user_func($io['vote'], '/api/relay/vote/catalog', array('items' => $items), $key);
+            if ($r['code'] === 200) {
+                if ($V['catalogFor'] !== $name) {
+                    lh_log('Sent ' . count($items) . ' songs from playlist "' . $name . '" for song voting');
+                }
+                $V['catalogFor'] = $name;
+                $V['catalogAt'] = $mono;
+                $V['catalogCount'] = count($items);
+            } elseif ($r['code'] === 429) {
+                $V['catalogTry'] = $mono + lh_retry_after(isset($r['retryAfter']) ? $r['retryAfter'] : 0);
+            } else {
+                $V['catalogTry'] = $mono + 60;
+            }
+        }
+    }
+    if ($V['catalogFor'] !== $name) {
+        return 'waiting';
+    }
+    if ($S['votingFlag'] !== 'open') {
+        $V['roundId'] = null;
+        return $S['votingFlag'] === 'paused' ? 'paused' : 'setup';
+    }
+
+    // Open this song's ballot once, early enough for visitors to vote.
+    if ($V['roundId'] === null && !$V['openDone'] && $mono >= $V['openTry'] && $mono >= $V['nextTry']) {
+        $duration = $played !== null && $left !== null ? $played + $left : null;
+        if ($left === null || $left <= LH_VOTE_OPEN_LEFT || $duration < LH_VOTE_MIN_SONG) {
+            $V['openDone'] = true;
+        } else {
+            $title = isset($report['mediaTitle']) ? $report['mediaTitle'] : (isset($report['name']) ? $report['name'] : (isset($report['mediaFilename']) ? $report['mediaFilename'] : ''));
+            $r = call_user_func($io['vote'], '/api/relay/vote/round', array('instance' => $V['instance'], 'currentTitle' => $title, 'durationSeconds' => $duration), $key);
+            if ($r['code'] === 200) {
+                $V['openDone'] = true;
+                $V['roundId'] = isset($r['json']['roundId']) && is_string($r['json']['roundId']) ? $r['json']['roundId'] : null;
+            } elseif ($r['code'] === 429) {
+                $V['nextTry'] = $mono + lh_retry_after(isset($r['retryAfter']) ? $r['retryAfter'] : 0);
+            } elseif ($r['code'] === 0 || $r['code'] >= 500) {
+                $V['openTry'] = $mono + LH_VOTE_OPEN_RETRY;
+            } else {
+                $V['openDone'] = true;
+            }
+        }
+    }
+
+    // Near the end of the song, ask for the winner and queue it.
+    if ($V['roundId'] !== null && !$V['claimed'] && $left !== null && $left <= LH_VOTE_CLAIM_LEFT && $mono >= $V['nextTry']) {
+        $roundId = $V['roundId'];
+        $r = call_user_func($io['vote'], '/api/relay/vote/claim', array('roundId' => $roundId), $key);
+        if ($r['code'] === 200) {
+            $V['claimed'] = true;
+            if (isset($r['json']['status']) && $r['json']['status'] === 'winner' && isset($r['json']['lorName']) && is_string($r['json']['lorName'])) {
+                lh_vote_play($S, $fpp, $name, $roundId, $r['json']['lorName'], $io, $mono);
+            }
+        } elseif ($r['code'] === 429) {
+            $V['nextTry'] = $mono + lh_retry_after(isset($r['retryAfter']) ? $r['retryAfter'] : 0);
+        } elseif ($r['code'] !== 0 && $r['code'] < 500) {
+            $V['claimed'] = true; // refused; trying again cannot help
+        }
+    }
+    return 'live';
+}
+
+/** Queues the winner to play after the current song, unless FPP plays it next anyway. Never cuts the current song off. */
+function lh_vote_play(&$S, $fpp, $playlistName, $roundId, $winner, $io, $mono)
+{
+    $V = &$S['vote'];
+    $playlist = call_user_func($io['playlistRaw'], $playlistName);
+    $position = lh_vote_position($playlist, $winner);
+    if ($position === null) {
+        lh_log('The winning song "' . $winner . '" is not in playlist "' . $playlistName . '" any more');
+        return lh_vote_owe($V, $roundId, 'missing', $mono);
+    }
+    // While an inserted winner plays, FPP's position is the winner's row, not the show's, so "next anyway" can't be read.
+    if (!$V['inWinner'] && lh_vote_next_position($fpp, $playlist) === $position) {
+        $V['queued'] = array('roundId' => $roundId, 'name' => trim((string) $winner));
+        return lh_vote_owe($V, $roundId, 'queued', $mono);
+    }
+    if (!call_user_func($io['command'], $playlistName, $position)) {
+        lh_log('Falcon Player did not accept the winning song "' . $winner . '"');
+        return lh_vote_owe($V, $roundId, 'rejected', $mono);
+    }
+    lh_log('Visitors picked "' . $winner . '"; it plays after this song');
+    $V['queued'] = array('roundId' => $roundId, 'name' => trim((string) $winner));
+    $V['inserted'] = true;
+    lh_vote_owe($V, $roundId, 'queued', $mono);
+}
+
+/** Adds a result to send. At most 20 wait; the oldest goes first if Light Hunt stays out of reach. */
+function lh_vote_owe(&$V, $roundId, $result, $mono)
+{
+    $V['results'][] = array('roundId' => $roundId, 'result' => $result, 'at' => $mono);
+    if (count($V['results']) > 20) {
+        array_shift($V['results']);
+    }
+}
+
+/** Sends owed results in order. A failure waits 10 seconds; Light Hunt's answer says whether voting just paused itself. */
+function lh_vote_send_results(&$S, $key, $io, $mono)
+{
+    $V = &$S['vote'];
+    while ($V['results'] && $mono >= $V['results'][0]['at'] && $mono >= $V['nextTry']) {
+        $owed = $V['results'][0];
+        $r = call_user_func($io['vote'], '/api/relay/vote/result', array('roundId' => $owed['roundId'], 'result' => $owed['result']), $key);
+        if ($r['code'] === 429) {
+            $V['nextTry'] = $mono + lh_retry_after(isset($r['retryAfter']) ? $r['retryAfter'] : 0);
+            return;
+        }
+        if ($r['code'] === 0 || $r['code'] >= 500) {
+            $V['results'][0]['at'] = $mono + LH_VOTE_RESULT_RETRY;
+            return;
+        }
+        array_shift($V['results']);
+        if ($r['code'] === 200 && isset($r['json']['paused']) && $r['json']['paused'] === true) {
+            if ($S['votingFlag'] !== 'paused') {
+                lh_log('Song voting paused itself: the show did not play the winning song 3 times in a row. Unpause it in Show tools on Light Hunt.');
+            }
+            $S['votingFlag'] = 'paused';
+        }
+    }
+}
+
+/** Light Hunt POST for song voting, with a shorter timeout than reports: a tick must not stall the show's now-playing line. */
+function lh_vote_post($path, $payload, $key)
+{
+    return lh_http('POST', lh_base_url() . $path, array('Content-Type: application/json', 'Authorization: Bearer ' . $key),
+        json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE), LH_VOTE_TIMEOUT);
 }
 
 /**

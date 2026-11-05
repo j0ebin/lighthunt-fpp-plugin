@@ -2,7 +2,7 @@
 	"repoName": "lighthunt-fpp-plugin",
 	"name": "Light Hunt - Now Playing",
 	"author": "Light Hunt (lightshunt.com)",
-	"description": "Shows the song Falcon Player is playing on your display page at lightshunt.com. After you pair it with a code, a small background process reads FPP's local status every 5 seconds and sends the current song (title and artist tags, audio file name, sequence name, play state, time remaining and total length, playlist name) plus the plugin version to lightshunt.com. The only other thing it can send is feedback you write, and only when you press Send on the plugin page. Nothing else leaves this device and the plugin never controls your show.",
+	"description": "Shows the song Falcon Player is playing on your display page at lightshunt.com. After you pair it with a code, a small background process reads FPP's local status every 5 seconds and sends the current song (title and artist tags, audio file name, sequence name, play state, time remaining and total length, playlist name) plus the plugin version to lightshunt.com. The only other thing it can send is feedback you write, and only when you press Send on the plugin page. Song voting is off until you turn it on in the plugin and in Show tools on lightshunt.com. Then the plugin also sends the sequence and audio file names in the running playlist, and when visitors pick a song it asks Falcon Player to play that song next with its own Insert Playlist After Current command. It never stops or cuts off the song that is playing. Apart from that the plugin never controls your show.",
 	"homeURL": "https://github.com/j0ebin/lighthunt-fpp-plugin",
 	"srcURL": "https://github.com/j0ebin/lighthunt-fpp-plugin.git",
 	"bugURL": "https://github.com/j0ebin/lighthunt-fpp-plugin/issues",
@@ -16,6 +16,12 @@
 				"to": "lightshunt.com",
 				"what": "pairing key, song title and artist, file names, play state, time left, the next songs in the playlist, playlist name, plugin version",
 				"why": "to show what is playing on your public Light Hunt display page",
+				"alwaysOn": false
+			},
+			{
+				"to": "lightshunt.com",
+				"what": "only while song voting is turned on: the sequence and audio file names in the running playlist, the song now playing and its length, and whether the winning song played",
+				"why": "to show visitors a ballot and play the song they pick next",
 				"alwaysOn": false
 			},
 			{
@@ -69,7 +75,7 @@
 			}
 		],
 		"sensors": [],
-		"remoteAccess": "none",
+		"remoteAccess": "Only while song voting is turned on: when visitors pick a song, the plugin runs Falcon Player's Insert Playlist After Current command on this player to play that song next. Light Hunt can choose only a song from the running playlist, and nothing else.",
 		"systemChanges": [
 			{
 				"kind": "service",

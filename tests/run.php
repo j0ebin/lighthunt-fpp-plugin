@@ -12,7 +12,8 @@ require __DIR__ . '/../lib/lighthunt.php';
 
 use function LightHunt\{lh_backoff, lh_base_url, lh_build_feedback, lh_build_report, lh_cant_save_message, lh_feedback_result, lh_fpp_is_remote, lh_fpp_uuid, lh_http, lh_log_tail, lh_redact_log, lh_config, lh_clock_warning, lh_daemon_running, lh_encode_report, lh_file, lh_local_deadline,
     lh_log_file, lh_new_state, lh_orphaned, lh_pending_deadline, lh_read_json, lh_reason_key, lh_reason_text, lh_retry_after, lh_safe_tick, lh_signature,
-    lh_start_poller, lh_status_path, lh_tick, lh_data_dir, lh_write_json, lh_next_items};
+    lh_start_poller, lh_status_path, lh_tick, lh_data_dir, lh_write_json, lh_next_items,
+    lh_vote_catalog_items, lh_vote_position, lh_vote_next_position, lh_voting_enabled};
 use const LightHunt\LH_VERSION;
 
 // Nothing here may reach lightshunt.com, even if a check goes wrong.
@@ -345,6 +346,191 @@ lh_tick($S, 7061, $io);
 same($plCalls, 2, 'playlist read again after a minute');
 unpair();
 
+/* ---------- Song voting: pure helpers ---------- */
+
+same(lh_vote_catalog_items($showPl), array(
+    array('name' => 'Carol of the Bells.fseq', 'media' => 'Carol of the Bells.mp3'),
+    array('name' => 'Tree Twinkle.fseq', 'media' => null),
+    array('name' => 'Sleigh Ride.mp3', 'media' => 'Sleigh Ride.mp3'),
+    array('name' => 'Feliz Navidad.fseq', 'media' => 'Feliz Navidad.mp3'),
+), 'vote catalog: main section songs only, media-only rows named by the audio file');
+$dupPl = array('mainPlaylist' => array(pl_entry('both', 'A.fseq', 'A.mp3'), pl_entry('playlist'), pl_entry('both', 'A.fseq', 'A.mp3')));
+same(count(lh_vote_catalog_items($dupPl)), 1, 'vote catalog: a song listed twice is sent once, sub-playlists skipped');
+same(lh_vote_catalog_items(null), array(), 'vote catalog: unreadable playlist sends nothing');
+same(lh_vote_position($showPl, 'Feliz Navidad.fseq'), 7, 'vote position counts the lead-in, pauses and commands like FPP');
+same(lh_vote_position($showPl, 'Sleigh Ride.mp3'), 5, 'vote position finds a media-only row');
+same(lh_vote_position($showPl, 'Intro.fseq'), null, 'vote position never picks a lead-in song');
+same(lh_vote_position($showPl, 'Gone.fseq'), null, 'vote position of a missing song');
+same(lh_vote_next_position(pl_status(4, 8), $showPl), 5, 'next position follows the current one');
+same(lh_vote_next_position(pl_status(7, 8, 1), $showPl), 2, 'next position loops the main section on repeat');
+same(lh_vote_next_position(pl_status(8, 8), $showPl), null, 'nothing after the last item');
+
+/* ---------- Song voting: the loop ---------- */
+
+function vote_status($seq, $media, $played, $left, $index, $random = 0)
+{
+    $st = fixture('playing-sequence-and-media');
+    $st['current_playlist'] = array('playlist' => 'Show', 'index' => (string) $index, 'count' => '8');
+    $st['current_sequence'] = $seq === null ? '' : $seq;
+    $st['current_song'] = $media === null ? '' : $media;
+    $st['seconds_played'] = (string) $played;
+    $st['seconds_remaining'] = (string) $left;
+    $st['repeat_mode'] = 0;
+    $st['random'] = $random;
+    return $st;
+}
+$votingOn = array('code' => 200, 'json' => array('ok' => true, 'viewers' => 3, 'voting' => true), 'retryAfter' => null);
+pair($KEY);
+@unlink(lh_file('voting.json'));
+@unlink(lh_file('status.json'));
+$posts = array();
+list($cur, $io) = harness(null, $posts, $votingOn);
+$votes = array();
+$commands = array();
+$vc = new stdClass();
+$vc->claim = array('code' => 200, 'json' => array('status' => 'winner', 'lorName' => 'Feliz Navidad.fseq'), 'retryAfter' => null);
+$vc->result = array('code' => 200, 'json' => array('ok' => true, 'paused' => false), 'retryAfter' => null);
+$vc->commandOk = true;
+$io['vote'] = function ($path, $payload, $key) use (&$votes, $vc) {
+    $votes[] = array('path' => $path, 'body' => $payload, 'key' => $key);
+    if ($path === '/api/relay/vote/round') return array('code' => 200, 'json' => array('ok' => true, 'roundId' => 'r-' . count($votes)), 'retryAfter' => null);
+    if ($path === '/api/relay/vote/claim') return $vc->claim;
+    if ($path === '/api/relay/vote/result') return $vc->result;
+    return array('code' => 200, 'json' => array('ok' => true), 'retryAfter' => null);
+};
+$io['playlistRaw'] = function ($name) use ($showPl) { return $name === 'Show' ? $showPl : null; };
+$io['command'] = function ($playlist, $position) use (&$commands, $vc) { $commands[] = array($playlist, $position); return $vc->commandOk; };
+function vote_paths($votes)
+{
+    return array_map(function ($v) { return $v['path']; }, $votes);
+}
+
+// Switch off on the player: Light Hunt says voting is on, but nothing goes out and FPP is never told anything.
+$cur->status = vote_status('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 10, 200, 2);
+$S = lh_new_state();
+lh_tick($S, 9000, $io);
+same(count($votes), 0, 'voting: plugin switch off sends no list and opens no round');
+same(lh_read_json('status.json')['voting'], 'off', 'voting: page says off');
+
+// Switch on: the list goes out, then this song's round opens with its length.
+lh_write_json('voting.json', array('enabled' => true));
+lh_tick($S, 9005, $io);
+same(vote_paths($votes), array('/api/relay/vote/catalog', '/api/relay/vote/round'), 'voting: list sent, then round opened');
+same(count($votes[0]['body']['items']), 4, 'voting: list carries the four main songs');
+same($votes[0]['key'], $KEY, 'voting: calls use the pairing key');
+same($votes[1]['body']['durationSeconds'], 210, 'voting: round carries the song length');
+check(strpos($votes[1]['body']['instance'], 'fpp-') === 0, 'voting: round carries a per-song instance');
+same(lh_read_json('status.json')['voting'], 'live', 'voting: page says live');
+
+// No claim before 20 seconds are left, no second round, no second list.
+$cur->status = vote_status('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 185, 25, 2);
+lh_tick($S, 9010, $io);
+same(count($votes), 2, 'voting: nothing more with 25 seconds left');
+
+// With 20 left: claim, then Insert Playlist After Current for the winner's row.
+$cur->status = vote_status('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 190, 20, 2);
+lh_tick($S, 9015, $io);
+same(end($votes)['path'], '/api/relay/vote/claim', 'voting: claim with 20 seconds left');
+same(end($votes)['body']['roundId'], 'r-2', 'voting: claim names the open round');
+same($commands, array(array('Show', 7)), 'voting: FPP told to play row 7 next');
+lh_tick($S, 9016, $io);
+same(end($votes)['body'], array('roundId' => 'r-2', 'result' => 'queued'), 'voting: queued reported');
+$n = count($votes);
+lh_tick($S, 9017, $io);
+same(count($votes), $n, 'voting: one claim per song');
+
+// The winner starts: played goes out on the next tick.
+$cur->status = vote_status('Feliz Navidad.fseq', 'Feliz Navidad.mp3', 1, 200, 7);
+lh_tick($S, 9020, $io);
+lh_tick($S, 9021, $io);
+check(in_array(array('roundId' => 'r-2', 'result' => 'played'), array_map(function ($v) { return $v['body']; }, $votes), true), 'voting: played reported when the winner starts');
+same(count(array_filter($votes, function ($v) { return $v['path'] === '/api/relay/vote/catalog'; })), 1, 'voting: the list is not resent inside 10 minutes');
+
+// Winner already plays next on its own: no insert, still queued. Tree Twinkle is row 4, Sleigh Ride row 5.
+$commands = array();
+$vc->claim = array('code' => 200, 'json' => array('status' => 'winner', 'lorName' => 'Sleigh Ride.mp3'), 'retryAfter' => null);
+$cur->status = vote_status('Tree Twinkle.fseq', null, 1, 200, 4);
+lh_tick($S, 9100, $io);
+$cur->status = vote_status('Tree Twinkle.fseq', null, 185, 15, 4);
+lh_tick($S, 9105, $io);
+lh_tick($S, 9106, $io);
+same($commands, array(), 'voting: no insert when the winner is next anyway');
+same(end($votes)['body']['result'], 'queued', 'voting: still reported as queued');
+// The show goes elsewhere instead: not_played.
+$cur->status = vote_status('Feliz Navidad.fseq', 'Feliz Navidad.mp3', 1, 200, 7);
+lh_tick($S, 9110, $io);
+lh_tick($S, 9111, $io);
+check(in_array('not_played', array_map(function ($v) { return isset($v['body']['result']) ? $v['body']['result'] : null; }, $votes), true), 'voting: not_played when another song starts');
+
+// A winner no longer in the playlist: missing. FPP refusing the command: rejected.
+$vc->claim = array('code' => 200, 'json' => array('status' => 'winner', 'lorName' => 'Gone.fseq'), 'retryAfter' => null);
+$cur->status = vote_status('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 1, 200, 2);
+lh_tick($S, 9200, $io);
+$cur->status = vote_status('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 185, 15, 2);
+lh_tick($S, 9205, $io);
+lh_tick($S, 9206, $io);
+same(end($votes)['body']['result'], 'missing', 'voting: missing when the winner left the playlist');
+$vc->claim = array('code' => 200, 'json' => array('status' => 'winner', 'lorName' => 'Feliz Navidad.fseq'), 'retryAfter' => null);
+$vc->commandOk = false;
+$cur->status = vote_status('Tree Twinkle.fseq', null, 1, 200, 4);
+lh_tick($S, 9300, $io);
+$cur->status = vote_status('Tree Twinkle.fseq', null, 185, 15, 4);
+lh_tick($S, 9305, $io);
+lh_tick($S, 9306, $io);
+same(end($votes)['body']['result'], 'rejected', 'voting: rejected when FPP refuses the command');
+$vc->commandOk = true;
+
+// No votes: nothing is inserted.
+$commands = array();
+$vc->claim = array('code' => 200, 'json' => array('status' => 'no_votes'), 'retryAfter' => null);
+$cur->status = vote_status('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 1, 200, 2);
+lh_tick($S, 9400, $io);
+$cur->status = vote_status('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 185, 15, 2);
+lh_tick($S, 9405, $io);
+same($commands, array(), 'voting: no votes, no insert');
+
+// A short song gets no round; a shuffled playlist gets none either.
+$n = count($votes);
+$cur->status = vote_status('Tree Twinkle.fseq', null, 1, 40, 4);
+lh_tick($S, 9500, $io);
+same(count($votes), $n, 'voting: no round for a song under a minute');
+$cur->status = vote_status('Sleigh Ride.fseq', null, 1, 200, 5, 1);
+lh_tick($S, 9510, $io);
+same(count($votes), $n, 'voting: no round for a shuffled playlist');
+same(lh_read_json('status.json')['voting'], 'shuffled', 'voting: page says shuffled');
+
+// Voting off in Show tools: the list still goes out (so Show tools can match songs), no rounds open.
+$cur->reply = $ok;
+$cur->status = vote_status('Feliz Navidad.fseq', 'Feliz Navidad.mp3', 1, 200, 7);
+$n = count($votes);
+lh_tick($S, 9600, $io);
+same(count($votes), $n, 'voting: off on Light Hunt opens no round');
+same(lh_read_json('status.json')['voting'], 'setup', 'voting: page says to turn it on in Show tools');
+$cur->reply = array('code' => 200, 'json' => array('ok' => true, 'votingPaused' => true), 'retryAfter' => null);
+$cur->status = vote_status('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 1, 200, 2);
+lh_tick($S, 9610, $io);
+same(lh_read_json('status.json')['voting'], 'paused', 'voting: page says paused');
+
+// A result whose answer says voting paused itself shows paused at once.
+$cur->reply = $votingOn;
+$vc->claim = array('code' => 200, 'json' => array('status' => 'winner', 'lorName' => 'Feliz Navidad.fseq'), 'retryAfter' => null);
+$vc->result = array('code' => 200, 'json' => array('ok' => true, 'paused' => true), 'retryAfter' => null);
+$cur->status = vote_status('Tree Twinkle.fseq', null, 1, 200, 4);
+lh_tick($S, 9700, $io);
+$cur->status = vote_status('Tree Twinkle.fseq', null, 185, 15, 4);
+lh_tick($S, 9705, $io);
+lh_tick($S, 9706, $io);
+same($S['votingFlag'], 'paused', 'voting: a paused answer pauses at once');
+
+// Switching off on the player stops everything at the next tick.
+@unlink(lh_file('voting.json'));
+$n = count($votes);
+$cur->status = vote_status('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 1, 200, 2);
+lh_tick($S, 9800, $io);
+same(count($votes), $n, 'voting: switch off stops at once');
+same(lh_read_json('status.json')['voting'], 'off', 'voting: page says off again');
+unpair();
+
 require __DIR__ . '/../api.php';
 
 unpair();
@@ -376,6 +562,21 @@ check(!is_file(lh_file('pending.json')), 'api: expired pending file removed');
 lighthuntfpppluginUnpair();
 check(!is_file(lh_file('config.json')) && !is_file(lh_file('status.json')), 'api: unpair removes the key and status');
 same(lighthuntfpppluginStatus()['paired'], false, 'api: unpaired after unpair');
+
+/* ---------- api: the song voting switch ---------- */
+
+unpair();
+same(lighthuntfpppluginVotingSet(array('enabled' => true))['ok'], false, 'api: voting cannot be turned on before pairing');
+same(lighthuntfpppluginVotingSet(array('enabled' => 'yes'))['ok'], false, 'api: voting switch needs true or false');
+pair($KEY);
+same(lighthuntfpppluginVotingSet(array('enabled' => true)), array('ok' => true, 'enabled' => true), 'api: voting turned on');
+check(lh_voting_enabled(), 'api: voting switch saved');
+same(lighthuntfpppluginStatus()['votingEnabled'], true, 'api: status shows the switch');
+lighthuntfpppluginVotingSet(array('enabled' => false));
+check(!lh_voting_enabled(), 'api: voting turned off');
+lighthuntfpppluginVotingSet(array('enabled' => true));
+lighthuntfpppluginUnpair();
+check(!is_file(lh_file('voting.json')), 'api: unpair turns voting off');
 
 /* ---------- pairstart refuses while paired; ensure is a POST that never pairs ---------- */
 
@@ -620,7 +821,7 @@ unpair();
 
 // The heartbeat leaves room for two lost posts before Light Hunt calls the sender stale (60 s).
 same(\LightHunt\LH_HEARTBEAT_SECONDS, 20, 'heartbeat is 20 seconds');
-same(LH_VERSION, '0.4.1', 'plugin version');
+same(LH_VERSION, '0.5.0', 'plugin version');
 
 // Intervals run on the monotonic clock: a wall clock that steps back (NTP on a Pi with no RTC) changes nothing.
 pair($KEY);

@@ -28,6 +28,7 @@ use function LightHunt\lh_reason_key;
 use function LightHunt\lh_reason_text;
 use function LightHunt\lh_start_poller;
 use function LightHunt\lh_text_length;
+use function LightHunt\lh_voting_enabled;
 use function LightHunt\lh_write_json;
 use const LightHunt\LH_FEEDBACK_MAX;
 use const LightHunt\LH_FEEDBACK_MIN;
@@ -43,6 +44,7 @@ function getEndpointslighthuntfppplugin()
         array('method' => 'POST', 'endpoint' => 'pairstart', 'callback' => 'lighthuntfpppluginPairStart'),
         array('method' => 'POST', 'endpoint' => 'paircheck', 'callback' => 'lighthuntfpppluginPairCheck'),
         array('method' => 'POST', 'endpoint' => 'unpair', 'callback' => 'lighthuntfpppluginUnpair'),
+        array('method' => 'POST', 'endpoint' => 'voting', 'callback' => 'lighthuntfpppluginVoting'),
         array('method' => 'GET', 'endpoint' => 'feedbackpreview', 'callback' => 'lighthuntfpppluginFeedbackPreview'),
         array('method' => 'POST', 'endpoint' => 'feedback', 'callback' => 'lighthuntfpppluginFeedback'),
     );
@@ -67,6 +69,8 @@ function lighthuntfpppluginStatus()
         'lastReportAt' => $fresh && isset($status['lastReportAt']) ? $status['lastReportAt'] : null,
         'viewers' => $fresh && isset($status['viewers']) ? $status['viewers'] : null,
         'reason' => $fresh && isset($status['reason']) ? lh_reason_text($status['reason'], time()) : null,
+        'votingEnabled' => lh_voting_enabled(),
+        'voting' => $fresh && isset($status['voting']) ? $status['voting'] : null,
         'display' => null,
         'pending' => null,
     );
@@ -218,8 +222,36 @@ function lighthuntfpppluginUnpair()
     @unlink(lh_file('config.json'));
     @unlink(lh_file('pending.json'));
     @unlink(lh_file('status.json'));
+    // A later pairing, maybe to another display, starts with voting off again.
+    @unlink(lh_file('voting.json'));
     lh_log('Pairing key removed from this device');
     return json(array('ok' => true));
+}
+
+// POST /api/plugin/lighthunt-fpp-plugin/voting  {enabled: true|false}
+function lighthuntfpppluginVoting()
+{
+    $in = json_decode((string) file_get_contents('php://input'), true);
+    return json(lighthuntfpppluginVotingSet(is_array($in) ? $in : array()));
+}
+
+/**
+ * The owner's switch for song voting on this player. While it is off the plugin only reads what is
+ * playing; on, it may tell FPP to play the visitors' pick next. Only a paired player can turn it on.
+ */
+function lighthuntfpppluginVotingSet($in)
+{
+    if (!isset($in['enabled']) || !is_bool($in['enabled'])) {
+        return array('ok' => false, 'error' => 'enabled must be true or false');
+    }
+    if ($in['enabled'] && !lh_config()) {
+        return array('ok' => false, 'error' => 'Pair this player with your display first.');
+    }
+    if (!lh_write_json('voting.json', array('enabled' => $in['enabled'], 'changedAt' => gmdate('c')))) {
+        return array('ok' => false, 'error' => lh_cant_save_message());
+    }
+    lh_log($in['enabled'] ? 'Song voting turned on in the plugin page' : 'Song voting turned off in the plugin page');
+    return array('ok' => true, 'enabled' => $in['enabled']);
 }
 
 // GET /api/plugin/lighthunt-fpp-plugin/feedbackpreview
