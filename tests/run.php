@@ -13,7 +13,7 @@ require __DIR__ . '/../lib/lighthunt.php';
 use function LightHunt\{lh_backoff, lh_base_url, lh_build_feedback, lh_build_report, lh_cant_save_message, lh_feedback_result, lh_fpp_is_remote, lh_fpp_uuid, lh_http, lh_log_tail, lh_redact_log, lh_config, lh_clock_warning, lh_daemon_running, lh_encode_report, lh_file, lh_local_deadline,
     lh_log_file, lh_new_state, lh_orphaned, lh_pending_deadline, lh_read_json, lh_reason_key, lh_reason_text, lh_retry_after, lh_safe_tick, lh_signature,
     lh_start_poller, lh_status_path, lh_tick, lh_data_dir, lh_write_json, lh_next_items,
-    lh_vote_catalog_items, lh_vote_position, lh_vote_next_position, lh_voting_enabled};
+    lh_vote_catalog_items, lh_vote_position, lh_vote_next_position, lh_voting_enabled, lh_shuffled};
 use const LightHunt\LH_VERSION;
 
 // Nothing here may reach lightshunt.com, even if a check goes wrong.
@@ -313,6 +313,13 @@ same(lh_next_items(pl_status(1, 8), $showPl)[0], array('name' => 'Carol of the B
 same(lh_next_items(pl_status(8, 8, 1), $showPl), array(), 'last lead-out item has nothing next');
 // Shuffled: FPP picks the next song live, so say nothing.
 same(lh_next_items(pl_status(2, 8, 0, 1), $showPl), array(), 'shuffled playlist has no up next');
+// FPP 7, 8 and 9 have no `random` in their status; the playlist file says it (FPP 10 says both).
+$noRandom = pl_status(2, 8);
+unset($noRandom['random']);
+same(lh_next_items($noRandom, $showPl + array('random' => 1)), array(), 'shuffled per the playlist file has no up next');
+same(lh_next_items($noRandom, $showPl + array('random' => 2)), array(), 'shuffled every loop has no up next');
+same(count(lh_next_items($noRandom, $showPl + array('random' => 0))), 3, 'random 0 in the file is not shuffled');
+check(lh_shuffled(array('random' => 1), null) && !lh_shuffled(array(), null) && !lh_shuffled(null, array('random' => '0')), 'shuffled: status or file, 0 or missing is off');
 // The playlist on disk no longer matches what FPP is running: say nothing rather than guess.
 same(lh_next_items(pl_status(2, 9), $showPl), array(), 'count mismatch has no up next');
 same(lh_next_items(pl_status(0, 8), $showPl), array(), 'idle position has no up next');
@@ -529,6 +536,96 @@ $cur->status = vote_status('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 
 lh_tick($S, 9800, $io);
 same(count($votes), $n, 'voting: switch off stops at once');
 same(lh_read_json('status.json')['voting'], 'off', 'voting: page says off again');
+
+/* ---------- Song voting on FPP 7 to 9: shuffle from the playlist file, and the insert boundary ---------- */
+
+// These FPP versions have no `random` in their status. The tick reads the playlist (for Up next) and votes from it.
+function vote_status_old($seq, $media, $played, $left, $index)
+{
+    $st = vote_status($seq, $media, $played, $left, $index);
+    unset($st['random']);
+    return $st;
+}
+lh_write_json('voting.json', array('enabled' => true));
+$cur->reply = $votingOn;
+$vc->result = array('code' => 200, 'json' => array('ok' => true, 'paused' => false), 'retryAfter' => null);
+$vc->claim = array('code' => 200, 'json' => array('status' => 'winner', 'lorName' => 'Feliz Navidad.fseq'), 'retryAfter' => null);
+$plFile = new stdClass();
+$plFile->merged = $showPl;
+$plFile->raw = $showPl;
+$io['playlist'] = function ($name) use ($plFile) { return $name === 'Show' ? $plFile->merged : null; };
+$io['playlistRaw'] = function ($name) use ($plFile) { return $name === 'Show' ? $plFile->raw : null; };
+$results = function () use (&$votes) {
+    return array_values(array_filter(array_map(function ($v) { return isset($v['body']['result']) ? $v['body']['roundId'] . ':' . $v['body']['result'] : null; }, $votes)));
+};
+
+// Shuffle in the file only: no round, page says shuffled, no Up next sent.
+$plFile->merged = $showPl + array('random' => 1);
+$plFile->raw = $plFile->merged;
+$S = lh_new_state();
+$votes = array();
+$commands = array();
+$posts = array();
+$cur->status = vote_status_old('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 10, 200, 2);
+lh_tick($S, 20000, $io);
+same(array_filter(vote_paths($votes), function ($p) { return $p !== '/api/relay/vote/catalog'; }), array(), 'voting: no round when only the playlist file says shuffled');
+same(lh_read_json('status.json')['voting'], 'shuffled', 'voting: page says shuffled from the playlist file');
+check(!isset(end($posts)['body']['upNext']), 'up next: none when only the playlist file says shuffled');
+
+// Shuffle switched on after the round opened (Up next's copy is up to a minute old): no insert, no result owed.
+$plFile->merged = $showPl;
+$plFile->raw = $showPl;
+$S = lh_new_state();
+$votes = array();
+$cur->status = vote_status_old('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 10, 200, 2);
+lh_tick($S, 20100, $io);
+same(end($votes)['path'], '/api/relay/vote/round', 'voting: round opens on an unshuffled playlist');
+$plFile->raw = $showPl + array('random' => 1);
+$cur->status = vote_status_old('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 190, 20, 2);
+lh_tick($S, 20105, $io);
+lh_tick($S, 20106, $io);
+same($commands, array(), 'voting: no insert once the playlist is shuffled');
+same($results(), array(), 'voting: no result owed for a winner skipped because of shuffle');
+$plFile->raw = $showPl;
+
+// The insert boundary: FPP 7 to 9 show the finished song again at 0:00 for a fraction of a second before
+// the inserted winner starts. A poll there must not settle the winner as not_played.
+$S = lh_new_state();
+$votes = array();
+$commands = array();
+$cur->status = vote_status_old('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 10, 200, 2);
+lh_tick($S, 20200, $io);
+$cur->status = vote_status_old('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 190, 20, 2);
+lh_tick($S, 20205, $io);
+same($commands, array(array('Show', 7)), 'boundary: winner inserted');
+$cur->status = vote_status_old('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 0, 210, 2); // the glitch poll
+lh_tick($S, 20210, $io);
+$cur->status = vote_status_old('Feliz Navidad.fseq', 'Feliz Navidad.mp3', 5, 195, 1); // then the winner
+lh_tick($S, 20215, $io);
+lh_tick($S, 20216, $io);
+$r = $results();
+same(array_slice($r, -2), array('r-2:queued', 'r-2:played'), 'boundary: winner reported played, not not_played');
+same(count(array_filter($r, function ($x) { return strpos($x, 'not_played') !== false; })), 0, 'boundary: no not_played anywhere');
+same(count(array_filter(vote_paths($votes), function ($p) { return $p === '/api/relay/vote/round'; })), 2, 'boundary: no round opened for the glitch poll');
+
+// A real restart of the same song (a song on a loop) still counts, one poll later: the queued winner that
+// did not come is not_played, and the restarted song gets its own round.
+$S = lh_new_state();
+$votes = array();
+$cur->status = vote_status_old('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 10, 200, 2);
+lh_tick($S, 20300, $io);
+$cur->status = vote_status_old('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 190, 20, 2);
+lh_tick($S, 20305, $io);
+$cur->status = vote_status_old('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 1, 209, 2);
+lh_tick($S, 20310, $io);
+same($results(), array('r-2:queued'), 'restart: one poll at 0:00 sends nothing yet');
+same($S['vote']['results'], array(), 'restart: one poll at 0:00 owes nothing yet');
+$cur->status = vote_status_old('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 6, 204, 2);
+lh_tick($S, 20315, $io);
+lh_tick($S, 20316, $io);
+same($results(), array('r-2:queued', 'r-2:not_played'), 'restart: the second poll confirms it and settles not_played');
+same(count(array_filter(vote_paths($votes), function ($p) { return $p === '/api/relay/vote/round'; })), 2, 'restart: the restarted song opens its own round');
+@unlink(lh_file('voting.json'));
 unpair();
 
 require __DIR__ . '/../api.php';
@@ -821,7 +918,7 @@ unpair();
 
 // The heartbeat leaves room for two lost posts before Light Hunt calls the sender stale (60 s).
 same(\LightHunt\LH_HEARTBEAT_SECONDS, 20, 'heartbeat is 20 seconds');
-same(LH_VERSION, '0.5.0', 'plugin version');
+same(LH_VERSION, '0.5.1', 'plugin version');
 
 // Intervals run on the monotonic clock: a wall clock that steps back (NTP on a Pi with no RTC) changes nothing.
 pair($KEY);

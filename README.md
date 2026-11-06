@@ -38,7 +38,7 @@ While both are on, the poller:
 4. Runs FPP's own `Insert Playlist After Current` command for that one entry (`POST /api/command`, args `[playlist, n, n, "false"]`). If the winner already plays next, it inserts nothing. The playing song is never cut off.
 5. Reports `queued`, `rejected` or `missing`, then `played` or `not_played` when the next song starts (`POST /api/relay/vote/result`).
 
-It skips shuffled playlists. These are the same endpoints the Light-O-Rama Relay uses. The plugin page shows the state: off, waiting for Light Hunt, shuffled, turn it on in Show tools, paused, or live. Turning the switch off stops it within one poll; unpairing also removes the switch file `voting.json`.
+It skips shuffled playlists: FPP 10 says so in its status, FPP 7, 8 and 9 only in the playlist file, so the plugin reads both. These are the same endpoints the Light-O-Rama Relay uses. The plugin page shows the state: off, waiting for Light Hunt, shuffled, turn it on in Show tools, paused, or live. Turning the switch off stops it within one poll; unpairing also removes the switch file `voting.json`.
 
 ## Unpair and uninstall
 
@@ -63,7 +63,7 @@ Only after you pair. Every 5 seconds the plugin reads `http://127.0.0.1/api/fppd
   "upNext": [
     { "name": "Wizards in Winter.fseq", "mediaFilename": "Wizards in Winter.mp3", "mediaTitle": "Wizards in Winter", "mediaArtist": "Trans-Siberian Orchestra" }
   ],
-  "relayVersion": "0.5.0"
+  "relayVersion": "0.5.1"
 }
 ```
 
@@ -85,7 +85,7 @@ The **Send feedback** card on the plugin page posts to `https://lightshunt.com/a
   "message": "What you typed",
   "email": "only if you typed one",
   "context": {
-    "pluginVersion": "0.5.0",
+    "pluginVersion": "0.5.1",
     "fppVersion": "10.2",
     "fppBranch": "master",
     "phpVersion": "8.2.12",

@@ -12,7 +12,7 @@
 namespace LightHunt;
 
 const LH_REPO = 'lighthunt-fpp-plugin';
-const LH_VERSION = '0.5.0';
+const LH_VERSION = '0.5.1';
 const LH_KEY_RE = '/^lhr_[A-Za-z0-9_-]{43}$/';
 // Light Hunt calls a sender stale after 60 seconds (STALE_MS in api/_relay.ts), so this leaves room for two lost posts.
 const LH_HEARTBEAT_SECONDS = 20;
@@ -449,6 +449,20 @@ function lh_fpp_insert_next($playlist, $position)
 }
 
 /**
+ * True when FPP shuffles the playlist, so FPP picks the next song itself. FPP 10 puts `random` in its
+ * status; FPP 7, 8 and 9 have it only in the playlist file (0 off, 1 shuffle once, 2 every loop). Pure.
+ */
+function lh_shuffled($st, $playlist)
+{
+    foreach (array($st, $playlist) as $doc) {
+        if (is_array($doc) && !empty($doc['random']) && (int) $doc['random'] > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
  * The next songs FPP will play, from its status and the running playlist. Pure, so it is tested with recorded JSON.
  * Returns up to LH_MAX_NEXT items of ['name' => sequence file, 'mediaFilename' => audio file] (either may be missing).
  * Empty when the playlist is shuffled (FPP picks the next song live), or the position doesn't fit the playlist.
@@ -459,7 +473,7 @@ function lh_next_items($st, $playlist)
     if (!is_array($st) || !is_array($playlist)) {
         return array();
     }
-    if (!empty($st['random']) && (int) $st['random'] > 0) {
+    if (lh_shuffled($st, $playlist)) {
         return array();
     }
     $sections = array();
@@ -852,7 +866,7 @@ function lh_vote_state()
         'sig' => null, 'played' => null, 'instance' => null,
         'catalogFor' => null, 'catalogAt' => 0, 'catalogTry' => 0, 'catalogCount' => null,
         'roundId' => null, 'openDone' => false, 'openTry' => 0, 'claimed' => false,
-        'queued' => null, 'inserted' => false, 'inWinner' => false,
+        'queued' => null, 'inserted' => false, 'inWinner' => false, 'dropSeen' => false,
         'results' => array(), 'nextTry' => 0,
     );
 }
@@ -945,9 +959,16 @@ function lh_vote_tick(&$S, $fpp, $report, $key, $io, $mono)
     $sig = $playing ? lh_signature($report) : null;
     $played = lh_seconds(isset($fpp['seconds_played']) ? $fpp['seconds_played'] : null);
     $left = lh_seconds(isset($fpp['seconds_remaining']) ? $fpp['seconds_remaining'] : null);
-    $newSong = $playing && ($sig !== $V['sig'] || ($played !== null && $V['played'] !== null && $played < $V['played'] - LH_RESTART_DROP));
+    // The same song's clock jumping back is a restart, but only when two polls in a row say so. Right after
+    // an inserted song is queued, FPP 7, 8 and 9 show the finished song again at 0:00 for a fraction of a
+    // second; a poll landing there would read as a restart and settle a winner that did play as not_played.
+    $drop = $playing && $sig === $V['sig'] && $played !== null && $V['played'] !== null && $played < $V['played'] - LH_RESTART_DROP;
+    $newSong = $playing && ($sig !== $V['sig'] || ($drop && $V['dropSeen']));
+    $V['dropSeen'] = $drop && !$newSong;
     $V['sig'] = $sig;
-    $V['played'] = $played;
+    if (!$V['dropSeen']) {
+        $V['played'] = $played; // while a drop waits for its second poll, compare against the clock from before it
+    }
 
     if ($newSong) {
         $here = array(isset($report['name']) ? $report['name'] : null, isset($report['mediaFilename']) ? $report['mediaFilename'] : null);
@@ -970,11 +991,12 @@ function lh_vote_tick(&$S, $fpp, $report, $key, $io, $mono)
         $V['roundId'] = null; // a stop or a pause between songs ends this song's round; Light Hunt expires it
         return 'waiting';
     }
-    if (!empty($fpp['random']) && (int) $fpp['random'] > 0) {
+    $name = isset($report['showName']) ? $report['showName'] : null;
+    // The playlist as Up next last read it (at most a minute old); lh_vote_play checks again before it inserts.
+    if (lh_shuffled($fpp, $name !== null && $S['playlistName'] === $name ? $S['playlist'] : null)) {
         $V['roundId'] = null;
         return 'shuffled'; // FPP picks the next song itself, so a winner could not be played next
     }
-    $name = isset($report['showName']) ? $report['showName'] : null;
     if ($name === null) {
         return 'waiting';
     }
@@ -1052,6 +1074,11 @@ function lh_vote_play(&$S, $fpp, $playlistName, $roundId, $winner, $io, $mono)
 {
     $V = &$S['vote'];
     $playlist = call_user_func($io['playlistRaw'], $playlistName);
+    if (lh_shuffled($fpp, $playlist)) {
+        // Shuffle went on after this round opened. Nothing is queued, so the round just expires on Light Hunt.
+        lh_log('Not playing the winning song "' . $winner . '": playlist "' . $playlistName . '" is shuffled now');
+        return;
+    }
     $position = lh_vote_position($playlist, $winner);
     if ($position === null) {
         lh_log('The winning song "' . $winner . '" is not in playlist "' . $playlistName . '" any more');
