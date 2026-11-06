@@ -6,11 +6,11 @@ This folder is laid out as the root of an FPP plugin repository (`lighthunt-fpp-
 
 ## Supported versions
 
-FPP 9 and later. `pluginInfo.json` lists FPP 9.0 and up, so Plugin Manager marks FPP 8 and earlier as incompatible. It runs on the PHP and curl that FPP ships (PHP 7.4 through 8.x), with no extra packages.
+FPP 7 and later. `pluginInfo.json` lists FPP 7.0 and up, so Plugin Manager marks FPP 6 and earlier as incompatible. It runs on the PHP and curl that FPP ships (PHP 7.4 through 8.x), with no extra packages.
 
-Tested on FPP 9.5, 10.2 and the 10.x nightly. Later versions should work but are untested. FPP 8 isn't supported yet.
+Tested on FPP 7.5, 8.5, 9.5, 10.2 and the 10.x nightly. Later versions should work but are untested.
 
-FPP 9 installs follow the `fpp9` branch, which only gets commits tested on FPP 9, so pressing **Update** on FPP 9 never pulls in a change made for FPP 10. FPP 10 and later follow `main`.
+FPP 7, 8 and 9 installs follow the `fpp7`, `fpp8` and `fpp9` branches. Each gets only commits tested on that FPP version, so pressing **Update** on an older FPP never pulls in a change made for FPP 10. FPP 10 and later follow `main`.
 
 ## Install
 

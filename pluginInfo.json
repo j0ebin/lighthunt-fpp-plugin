@@ -87,6 +87,20 @@
 	},
 	"versions": [
 		{
+			"minFPPVersion": "7.0",
+			"maxFPPVersion": "7.99",
+			"branch": "fpp7",
+			"sha": "0a58a111caa4aea368f28b6aa44b71c66b6d6dac",
+			"allowUpdates": 0
+		},
+		{
+			"minFPPVersion": "8.0",
+			"maxFPPVersion": "8.99",
+			"branch": "fpp8",
+			"sha": "0a58a111caa4aea368f28b6aa44b71c66b6d6dac",
+			"allowUpdates": 0
+		},
+		{
 			"minFPPVersion": "9.0",
 			"maxFPPVersion": "9.99",
 			"branch": "fpp9",
