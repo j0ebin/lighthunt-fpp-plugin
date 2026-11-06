@@ -12,7 +12,7 @@
 namespace LightHunt;
 
 const LH_REPO = 'lighthunt-fpp-plugin';
-const LH_VERSION = '0.5.2';
+const LH_VERSION = '0.5.3';
 const LH_KEY_RE = '/^lhr_[A-Za-z0-9_-]{43}$/';
 // Light Hunt calls a sender stale after 60 seconds (STALE_MS in api/_relay.ts), so this leaves room for two lost posts.
 const LH_HEARTBEAT_SECONDS = 20;
@@ -874,7 +874,7 @@ function lh_vote_state()
         'sig' => null, 'played' => null, 'instance' => null,
         'catalogFor' => null, 'catalogAt' => 0, 'catalogTry' => 0, 'catalogCount' => null,
         'roundId' => null, 'openDone' => false, 'openTry' => 0, 'claimed' => false,
-        'queued' => null, 'inserted' => false, 'inWinner' => false, 'dropSeen' => false,
+        'queued' => null, 'inserted' => false, 'inWinner' => false, 'showPos' => null, 'dropSeen' => false,
         'results' => array(), 'nextTry' => 0,
     );
 }
@@ -988,6 +988,9 @@ function lh_vote_tick(&$S, $fpp, $report, $key, $io, $mono)
             $V['inWinner'] = $won && $V['inserted'];
             $V['queued'] = null;
         }
+        if (!$V['inWinner']) {
+            $V['showPos'] = null; // back on the show's own songs
+        }
         $V['inserted'] = false;
         $V['instance'] = 'fpp-' . bin2hex(random_bytes(8));
         $V['roundId'] = null;
@@ -1092,8 +1095,13 @@ function lh_vote_play(&$S, $fpp, $playlistName, $roundId, $winner, $io, $mono)
         lh_log('The winning song "' . $winner . '" is not in playlist "' . $playlistName . '" any more');
         return lh_vote_owe($V, $roundId, 'missing', $mono);
     }
-    // While an inserted winner plays, FPP's position is the winner's row, not the show's, so "next anyway" can't be read.
-    if (!$V['inWinner'] && lh_vote_next_position($fpp, $playlist) === $position) {
+    // While an inserted winner plays, FPP shows it as row 1 of 1. After it FPP goes back to where the show was
+    // when the first winner went in, so "next anyway" is read from that row.
+    $here = isset($fpp['current_playlist']['index']) ? (int) $fpp['current_playlist']['index'] : 0;
+    $showAt = $V['inWinner'] ? $V['showPos'] : $here;
+    $show = $fpp;
+    $show['current_playlist']['index'] = $showAt === null ? 0 : $showAt;
+    if (lh_vote_next_position($show, $playlist) === $position) {
         $V['queued'] = array('roundId' => $roundId, 'name' => trim((string) $winner));
         return lh_vote_owe($V, $roundId, 'queued', $mono);
     }
@@ -1104,6 +1112,9 @@ function lh_vote_play(&$S, $fpp, $playlistName, $roundId, $winner, $io, $mono)
     lh_log('Visitors picked "' . $winner . '"; it plays after this song');
     $V['queued'] = array('roundId' => $roundId, 'name' => trim((string) $winner));
     $V['inserted'] = true;
+    if (!$V['inWinner']) {
+        $V['showPos'] = $here;
+    }
     lh_vote_owe($V, $roundId, 'queued', $mono);
 }
 

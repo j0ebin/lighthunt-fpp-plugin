@@ -488,6 +488,60 @@ lh_tick($S, 9306, $io);
 same(end($votes)['body']['result'], 'rejected', 'voting: rejected when FPP refuses the command');
 $vc->commandOk = true;
 
+// While an inserted winner plays, FPP shows it as row 1 of 1, so "next anyway" is read from where the show was
+// when the first winner went in. Found on the Pi 2026-11-06: Beta won twice in a row and played twice.
+function vote_status_inserted($seq, $media, $played, $left)
+{
+    $st = vote_status($seq, $media, $played, $left, 1);
+    $st['current_playlist']['count'] = '1';
+    return $st;
+}
+$commands = array();
+$vc->claim = array('code' => 200, 'json' => array('status' => 'winner', 'lorName' => 'Feliz Navidad.fseq'), 'retryAfter' => null);
+$cur->status = vote_status('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 1, 30, 2);
+lh_tick($S, 9315, $io);
+$cur->status = vote_status('Tree Twinkle.fseq', null, 1, 200, 4);
+lh_tick($S, 9320, $io);
+$cur->status = vote_status('Tree Twinkle.fseq', null, 185, 15, 4);
+lh_tick($S, 9325, $io);
+same($commands, array(array('Show', 7)), 'voting: Feliz Navidad inserted after Tree Twinkle (row 4)');
+// Feliz Navidad plays as an inserted song; visitors pick Sleigh Ride, row 5, which the show resumes with.
+$vc->claim = array('code' => 200, 'json' => array('status' => 'winner', 'lorName' => 'Sleigh Ride.mp3'), 'retryAfter' => null);
+$cur->status = vote_status_inserted('Feliz Navidad.fseq', 'Feliz Navidad.mp3', 1, 200);
+lh_tick($S, 9330, $io);
+$cur->status = vote_status_inserted('Feliz Navidad.fseq', 'Feliz Navidad.mp3', 185, 15);
+lh_tick($S, 9335, $io);
+lh_tick($S, 9336, $io);
+same($commands, array(array('Show', 7)), 'voting: no insert when the show resumes with the winner after an inserted song');
+same(end($votes)['body']['result'], 'queued', 'voting: that winner is still reported as queued');
+$cur->status = vote_status('Sleigh Ride.fseq', 'Sleigh Ride.mp3', 1, 200, 5);
+lh_tick($S, 9340, $io);
+lh_tick($S, 9341, $io);
+same(end($votes)['body']['result'], 'played', 'voting: and played when the show resumes with it');
+// Stacked: a winner that is not the resume song still goes in while an inserted song plays.
+$commands = array();
+$vc->claim = array('code' => 200, 'json' => array('status' => 'winner', 'lorName' => 'Feliz Navidad.fseq'), 'retryAfter' => null);
+$cur->status = vote_status('Tree Twinkle.fseq', null, 1, 200, 4);
+lh_tick($S, 9350, $io);
+$cur->status = vote_status('Tree Twinkle.fseq', null, 185, 15, 4);
+lh_tick($S, 9355, $io);
+$vc->claim = array('code' => 200, 'json' => array('status' => 'winner', 'lorName' => 'Carol of the Bells.fseq'), 'retryAfter' => null);
+$cur->status = vote_status_inserted('Feliz Navidad.fseq', 'Feliz Navidad.mp3', 1, 200);
+lh_tick($S, 9360, $io);
+$cur->status = vote_status_inserted('Feliz Navidad.fseq', 'Feliz Navidad.mp3', 185, 15);
+lh_tick($S, 9365, $io);
+same($commands, array(array('Show', 7), array('Show', 2)), 'voting: a different winner is inserted while an inserted song plays');
+// Carol plays inserted too; the show would still resume at row 5, so Sleigh Ride is again next anyway.
+$vc->claim = array('code' => 200, 'json' => array('status' => 'winner', 'lorName' => 'Sleigh Ride.mp3'), 'retryAfter' => null);
+$cur->status = vote_status_inserted('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 1, 200);
+lh_tick($S, 9370, $io);
+$cur->status = vote_status_inserted('Carol of the Bells.fseq', 'Carol of the Bells.mp3', 185, 15);
+lh_tick($S, 9375, $io);
+same($commands, array(array('Show', 7), array('Show', 2)), 'voting: after stacked inserts the show still resumes where it left off');
+$cur->status = vote_status('Sleigh Ride.fseq', 'Sleigh Ride.mp3', 1, 200, 5);
+lh_tick($S, 9380, $io);
+lh_tick($S, 9381, $io);
+
 // No votes: nothing is inserted.
 $commands = array();
 $vc->claim = array('code' => 200, 'json' => array('status' => 'no_votes'), 'retryAfter' => null);
@@ -919,7 +973,7 @@ unpair();
 
 // The heartbeat leaves room for two lost posts before Light Hunt calls the sender stale (60 s).
 same(\LightHunt\LH_HEARTBEAT_SECONDS, 20, 'heartbeat is 20 seconds');
-same(LH_VERSION, '0.5.2', 'plugin version');
+same(LH_VERSION, '0.5.3', 'plugin version');
 
 // Intervals run on the monotonic clock: a wall clock that steps back (NTP on a Pi with no RTC) changes nothing.
 pair($KEY);
