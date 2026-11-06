@@ -12,7 +12,7 @@
 namespace LightHunt;
 
 const LH_REPO = 'lighthunt-fpp-plugin';
-const LH_VERSION = '0.5.1';
+const LH_VERSION = '0.5.2';
 const LH_KEY_RE = '/^lhr_[A-Za-z0-9_-]{43}$/';
 // Light Hunt calls a sender stale after 60 seconds (STALE_MS in api/_relay.ts), so this leaves room for two lost posts.
 const LH_HEARTBEAT_SECONDS = 20;
@@ -641,7 +641,7 @@ function lh_new_state()
         'key' => null, 'sig' => null, 'sentAt' => 0, 'nextTry' => 0, 'fails' => 0, 'rejected' => null,
         'tagCache' => array(), 'tagRetry' => array(), 'lastOk' => null, 'lastReportAt' => null, 'viewers' => null,
         'lastStatusBody' => null, 'lastStatusAt' => 0, 'badSig' => null, 'reason' => null,
-        'lastPlayed' => null, 'restartPending' => false, 'notice' => null, 'lastError' => null,
+        'lastPlayed' => null, 'dropSeen' => false, 'restartPending' => false, 'notice' => null, 'lastError' => null,
         'playlistName' => null, 'playlistAt' => 0, 'playlist' => null,
         'votingFlag' => 'off', 'vote' => lh_vote_state(),
     );
@@ -726,11 +726,19 @@ function lh_tick(&$S, $now, $io, $mono = null)
     $sig = lh_signature($report);
     // The same song twice in a row, or one song on a loop, keeps its signature. Its clock jumping back is the restart.
     $played = lh_seconds(isset($fpp['seconds_played']) ? $fpp['seconds_played'] : null);
-    if ($played !== null && $S['lastPlayed'] !== null && $played < $S['lastPlayed'] - LH_RESTART_DROP) {
+    // Right after an inserted song is queued, FPP 7, 8 and 9 show the finished song at 0:00 for a fraction of a
+    // second. So a drop counts only when two polls in a row show it, and the first one sends nothing at all
+    // (not even a heartbeat): otherwise visitors would see the old song start over until the next poll.
+    $drop = $played !== null && $S['lastPlayed'] !== null && $played < $S['lastPlayed'] - LH_RESTART_DROP && $sig === $S['sig'];
+    $hold = $drop && !$S['dropSeen'];
+    if ($drop && !$hold) {
         $S['restartPending'] = true;
     }
-    $S['lastPlayed'] = $played;
-    $due = ($sig !== $S['sig'] || $S['restartPending'] || $mono - $S['sentAt'] >= LH_HEARTBEAT_SECONDS) && $mono >= $S['nextTry'];
+    $S['dropSeen'] = $hold;
+    if (!$hold) {
+        $S['lastPlayed'] = $played; // while a drop waits for its second poll, compare against the clock from before it
+    }
+    $due = !$hold && ($sig !== $S['sig'] || $S['restartPending'] || $mono - $S['sentAt'] >= LH_HEARTBEAT_SECONDS) && $mono >= $S['nextTry'];
     if ($report['state'] === 'playing' && isset($report['mediaFilename'])) {
         // Tags are read once per file, when it is first about to be reported. Only a real answer is
         // remembered; a timeout or 5xx from FPP is tried again after a minute.

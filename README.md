@@ -63,7 +63,7 @@ Only after you pair. Every 5 seconds the plugin reads `http://127.0.0.1/api/fppd
   "upNext": [
     { "name": "Wizards in Winter.fseq", "mediaFilename": "Wizards in Winter.mp3", "mediaTitle": "Wizards in Winter", "mediaArtist": "Trans-Siberian Orchestra" }
   ],
-  "relayVersion": "0.5.1"
+  "relayVersion": "0.5.2"
 }
 ```
 
@@ -85,7 +85,7 @@ The **Send feedback** card on the plugin page posts to `https://lightshunt.com/a
   "message": "What you typed",
   "email": "only if you typed one",
   "context": {
-    "pluginVersion": "0.5.1",
+    "pluginVersion": "0.5.2",
     "fppVersion": "10.2",
     "fppBranch": "master",
     "phpVersion": "8.2.12",

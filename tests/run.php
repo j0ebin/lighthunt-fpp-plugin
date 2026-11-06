@@ -15,6 +15,7 @@ use function LightHunt\{lh_backoff, lh_base_url, lh_build_feedback, lh_build_rep
     lh_start_poller, lh_status_path, lh_tick, lh_data_dir, lh_write_json, lh_next_items,
     lh_vote_catalog_items, lh_vote_position, lh_vote_next_position, lh_voting_enabled, lh_shuffled};
 use const LightHunt\LH_VERSION;
+use const LightHunt\LH_HEARTBEAT_SECONDS;
 
 // Nothing here may reach lightshunt.com, even if a check goes wrong.
 putenv('LIGHTHUNT_BASE_URL=http://127.0.0.1:1');
@@ -918,7 +919,7 @@ unpair();
 
 // The heartbeat leaves room for two lost posts before Light Hunt calls the sender stale (60 s).
 same(\LightHunt\LH_HEARTBEAT_SECONDS, 20, 'heartbeat is 20 seconds');
-same(LH_VERSION, '0.5.1', 'plugin version');
+same(LH_VERSION, '0.5.2', 'plugin version');
 
 // Intervals run on the monotonic clock: a wall clock that steps back (NTP on a Pi with no RTC) changes nothing.
 pair($KEY);
@@ -1010,7 +1011,8 @@ for ($i = 0; $i < 200; $i++) {
 }
 check(min(array_keys($spread)) >= 16 && max(array_keys($spread)) <= 24 && count($spread) > 2, 'backoff: random spread stays within 20% and varies');
 
-// A song restarting (a loop of one song, or the same song twice) is sent at once, though its signature did not change.
+// A song restarting (a loop of one song, or the same song twice) is sent, though its signature did not change,
+// once two polls in a row show its clock back near the start.
 $posts = array();
 list($cur, $io) = harness('playing-sequence-and-media', $posts, $ok);
 $st = fixture('playing-sequence-and-media');
@@ -1025,28 +1027,57 @@ same(count($posts), 1, 'restart: playing on sends nothing');
 $st['seconds_played'] = '2';
 $cur->status = $st;
 lh_tick($S, 7010, $io);
-same(count($posts), 2, 'restart: seconds played dropping by more than 5 sends at once');
+same(count($posts), 1, 'restart: one poll back at the start sends nothing yet');
 $st['seconds_played'] = '7';
 $cur->status = $st;
 lh_tick($S, 7015, $io);
-$st['seconds_played'] = '4';
+same(count($posts), 2, 'restart: the second poll confirms it and sends');
+$st['seconds_played'] = '10';
 $cur->status = $st;
 lh_tick($S, 7020, $io);
+$st['seconds_played'] = '7';
+$cur->status = $st;
+lh_tick($S, 7025, $io);
 same(count($posts), 2, 'restart: a dip of 3 seconds is not a restart');
 // A restart that arrives while sending is backing off is not forgotten.
 $st['seconds_played'] = '90';
 $cur->status = $st;
-lh_tick($S, 7021, $io);
-$cur->reply = array('code' => 503, 'json' => null, 'retryAfter' => null);
+lh_tick($S, 7026, $io);
 $st['seconds_played'] = '1';
 $cur->status = $st;
-lh_tick($S, 7022, $io);          // restart, the post fails, waits 5
+lh_tick($S, 7027, $io);          // first poll of the restart: held
+$cur->reply = array('code' => 503, 'json' => null, 'retryAfter' => null);
+$st['seconds_played'] = '2';
+$cur->status = $st;
+lh_tick($S, 7028, $io);          // confirmed, the post fails, waits 5
 $cur->reply = $ok;
 $before = count($posts);
-$st['seconds_played'] = '6';
+$st['seconds_played'] = '7';
 $cur->status = $st;
-lh_tick($S, 7027, $io);
+lh_tick($S, 7033, $io);
 same(count($posts), $before + 1, 'restart: retried after the backoff');
+
+// FPP 7, 8 and 9, right after an inserted song is queued: one poll shows the finished song at 0:00, the next
+// shows the inserted song. The 0:00 frame is never sent, not even when a heartbeat is due.
+$posts = array();
+list($cur, $io) = harness('playing-sequence-and-media', $posts, $ok);
+$st = fixture('playing-sequence-and-media');
+$st['seconds_played'] = '150';
+$cur->status = $st;
+$S = lh_new_state();
+lh_tick($S, 8000, $io);
+same(count($posts), 1, 'insert boundary: song playing is sent');
+$st['seconds_played'] = '0';
+$cur->status = $st;
+lh_tick($S, 8000 + LH_HEARTBEAT_SECONDS, $io);
+same(count($posts), 1, 'insert boundary: the 0:00 frame sends nothing, even with a heartbeat due');
+$next = $st;
+$next['current_song'] = 'Inserted.mp3';
+$next['seconds_played'] = '4';
+$cur->status = $next;
+lh_tick($S, 8005 + LH_HEARTBEAT_SECONDS, $io);
+same(count($posts), 2, 'insert boundary: the inserted song is sent next');
+same(end($posts)['body']['mediaFilename'], 'Inserted.mp3', 'insert boundary: and it names the inserted song');
 
 // Multisync remote: sends nothing, says why, and sends again the moment it is a player.
 $posts = array();
