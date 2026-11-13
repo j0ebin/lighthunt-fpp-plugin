@@ -12,11 +12,13 @@
     <div class="card-body">
       <h2 class="h5 card-title">Pair with your display</h2>
       <p id="lh-revoked" class="alert alert-warning d-none">Light Hunt no longer accepts the old pairing, usually because it was unpaired on your display page. Pair again to continue.</p>
+      <p class="mb-2">Light Hunt is free. Pairing needs a free Light Hunt account with your display on it.</p>
       <ol>
-        <li>Select <strong>Get a pairing code</strong>.</li>
-        <li>Sign in to Light Hunt with the account that owns your display and open the link shown with your code. Or open your display page in edit mode and type the code under <em>Show what's playing</em>.</li>
-        <li>This page updates by itself when you confirm.</li>
+        <li><a href="https://lightshunt.com/auth" target="_blank" rel="noopener noreferrer">Make a free Light Hunt account</a>.</li>
+        <li><a href="https://lightshunt.com/for-owners/find" target="_blank" rel="noopener noreferrer">Add or claim your display</a>.</li>
+        <li>Select <strong>Get a pairing code</strong> and confirm it on the page that opens. This page updates by itself.</li>
       </ol>
+      <p class="form-text">Already have both? Go straight to step 3.</p>
       <button type="button" class="btn btn-primary" id="lh-start">Get a pairing code</button>
     </div>
   </div>
