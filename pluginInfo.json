@@ -90,21 +90,21 @@
 			"minFPPVersion": "7.0",
 			"maxFPPVersion": "7.99",
 			"branch": "fpp7",
-			"sha": "76438fae506dc370b269ac3176d27dff881306d2",
+			"sha": "c145f79464c2bf86fcd3326b78691cb7e4459865",
 			"allowUpdates": 0
 		},
 		{
 			"minFPPVersion": "8.0",
 			"maxFPPVersion": "8.99",
 			"branch": "fpp8",
-			"sha": "76438fae506dc370b269ac3176d27dff881306d2",
+			"sha": "c145f79464c2bf86fcd3326b78691cb7e4459865",
 			"allowUpdates": 0
 		},
 		{
 			"minFPPVersion": "9.0",
 			"maxFPPVersion": "9.99",
 			"branch": "fpp9",
-			"sha": "76438fae506dc370b269ac3176d27dff881306d2",
+			"sha": "c145f79464c2bf86fcd3326b78691cb7e4459865",
 			"allowUpdates": 0
 		},
 		{
