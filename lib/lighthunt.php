@@ -12,7 +12,7 @@
 namespace LightHunt;
 
 const LH_REPO = 'lighthunt-fpp-plugin';
-const LH_VERSION = '0.5.4';
+const LH_VERSION = '0.6.0';
 const LH_KEY_RE = '/^lhr_[A-Za-z0-9_-]{43}$/';
 // Light Hunt calls a sender stale after 60 seconds (STALE_MS in api/_relay.ts), so this leaves room for two lost posts.
 const LH_HEARTBEAT_SECONDS = 20;
@@ -1221,3 +1221,6 @@ function lh_pair_url($code)
 {
     return lh_base_url() . '/relay/pair?code=' . rawurlencode($code);
 }
+
+// Show doctor: the readiness checks behind the plugin page's Show doctor tab.
+require_once __DIR__ . '/doctor.php';

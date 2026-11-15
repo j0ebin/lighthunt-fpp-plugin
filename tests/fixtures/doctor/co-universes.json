@@ -1,0 +1,19 @@
+{
+  "channelOutputs": [
+    {
+      "type": "universes",
+      "enabled": 1,
+      "timeout": 1000,
+      "startChannel": 1,
+      "channelCount": -1,
+      "universes": [
+        { "active": 1, "description": "Garage F16 192.168.1.50", "id": 1, "startChannel": 1, "channelCount": 512, "type": 1, "address": "192.168.1.50", "priority": 0, "monitor": 1, "deDuplicate": 0 },
+        { "active": 1, "description": "Garage F16 192.168.1.50", "id": 2, "startChannel": 513, "channelCount": 256, "universeCount": 2, "type": 1, "address": "192.168.1.50", "priority": 0, "monitor": 1, "deDuplicate": 0 },
+        { "active": 1, "description": "", "id": 3, "startChannel": 1025, "channelCount": 512, "type": 1, "address": "192.168.1.51", "priority": 0 },
+        { "active": 1, "description": "Mega tree", "id": 5, "startChannel": 1537, "channelCount": 1024, "universeCount": 3, "type": 4, "address": "192.168.1.52", "priority": 0 },
+        { "active": 1, "description": "Multicast yard", "id": 7, "startChannel": 2561, "channelCount": 512, "type": 0, "address": "239.255.0.7", "priority": 0 },
+        { "active": 0, "description": "Old roof", "id": 9, "startChannel": 3073, "channelCount": 512, "type": 1, "address": "192.168.1.60", "priority": 0 }
+      ]
+    }
+  ]
+}

@@ -40,6 +40,29 @@ While both are on, the poller:
 
 It skips shuffled playlists: FPP 10 says so in its status, FPP 7, 8 and 9 only in the playlist file, so the plugin reads both. These are the same endpoints the Light-O-Rama Relay uses. The plugin page shows the state: off, waiting for Light Hunt, shuffled, turn it on in Show tools, paused, or live. Turning the switch off stops it within one poll; unpairing also removes the switch file `voting.json`.
 
+## Show doctor
+
+The **Show doctor** tab answers "is the show ready for tonight?" with five checks, each ok, look or fix:
+
+| id | Checks | Fails when |
+|---|---|---|
+| `controller_unreachable` | pings each unicast address in `config/co-universes.json` (types 0 and 2 are multicast or broadcast and are skipped) | a controller does not answer |
+| `sequence_exceeds_outputs` | the channel count in each scheduled `.fseq` header against the highest channel the enabled outputs send (`co-universes`, `co-pixelStrings`, `co-bbbStrings`, `co-other`, `channeloutputs`) | warns when a sequence is bigger |
+| `missing_file` | each sequence and audio or video file in the scheduled playlists and their sub-playlists, and the sub-playlists themselves | a file is not on the player |
+| `nothing_tonight` | fppd's `/api/fppd/schedule` | warns when nothing runs tonight; fails when tonight's playlist has no songs |
+| `pi_health` | under-voltage and throttling (`get_throttled`), disk use, CPU temperature, `timedatectl` clock sync | fails on under-voltage now or a disk 98% full; warns on the rest |
+
+Results are saved to `doctor-results.json`. While paired, with **Send a summary to Light Hunt** on (the default), the poller posts a summary to `POST /api/relay/doctor` (pairing key as a Bearer token) once a night, 30 minutes before tonight's first scheduled start, and the page posts one after each **Run again**:
+
+```json
+{ "checkedAt": "2026-12-01T00:58:00+00:00",
+  "results": [ { "id": "controller_unreachable", "status": "fail", "count": 1, "models": ["Garage F16"] } ] }
+```
+
+`models` holds up to 20 names, with any IP address removed. No IP address leaves the player. A 404 from Light Hunt is logged once and the checks keep running.
+
+Below the five checks, **Channel layout** runs Light Hunt's web Show doctor (`src/lib/showDoctor/`) in the browser on the models xLights uploads to `config/model-overlays.json` and the same output files: two props on the same channels, props past the last channel, a universe used twice over multicast, and E1.31 and DDP sent to one address. The page reads the files through `GET doctordesign`; nothing from this part is saved or sent. The engine is bundled into `js/showdoctor.js` with `npm run build:fpp-doctor` from the website repo, and a test there fails when the committed file is out of date.
+
 ## Unpair and uninstall
 
 - **Unpair** on the plugin page removes the key from this player. To also end the link on Light Hunt, press **Unpair** under **Show what's playing** on your display page. If you unpair there first, the plugin notices within 30 seconds and offers to pair again.
@@ -63,7 +86,7 @@ Only after you pair. Every 5 seconds the plugin reads `http://127.0.0.1/api/fppd
   "upNext": [
     { "name": "Wizards in Winter.fseq", "mediaFilename": "Wizards in Winter.mp3", "mediaTitle": "Wizards in Winter", "mediaArtist": "Trans-Siberian Orchestra" }
   ],
-  "relayVersion": "0.5.4"
+  "relayVersion": "0.6.0"
 }
 ```
 
@@ -85,7 +108,7 @@ The **Send feedback** card on the plugin page posts to `https://lightshunt.com/a
   "message": "What you typed",
   "email": "only if you typed one",
   "context": {
-    "pluginVersion": "0.5.4",
+    "pluginVersion": "0.6.0",
     "fppVersion": "10.2",
     "fppBranch": "master",
     "phpVersion": "8.2.12",

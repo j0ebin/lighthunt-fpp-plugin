@@ -1,0 +1,4 @@
+[
+  { "enabled": 1, "sequence": 0, "day": 7, "playlist": "Christmas Show", "startTime": "SunSet", "startTimeOffset": 0, "endTime": "22:00:00", "endTimeOffset": 0, "repeat": 1, "startDate": "2026-11-27", "endDate": "2026-12-31", "stopType": 0 },
+  { "enabled": 0, "sequence": 0, "day": 7, "playlist": "Empty", "startTime": "17:00:00", "endTime": "18:00:00", "repeat": 0, "startDate": "2026-01-01", "endDate": "2026-12-31", "stopType": 0 }
+]

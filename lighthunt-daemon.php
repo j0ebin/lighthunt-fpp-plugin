@@ -12,6 +12,8 @@
 
 require_once __DIR__ . '/lib/lighthunt.php';
 
+use function LightHunt\lh_doctor_new_state;
+use function LightHunt\lh_doctor_tick;
 use function LightHunt\lh_file;
 use function LightHunt\lh_log;
 use function LightHunt\lh_new_state;
@@ -58,11 +60,33 @@ $io = array(
     'command' => 'LightHunt\\lh_fpp_insert_next',
 );
 
+// Show doctor: 30 minutes before tonight's first scheduled start, check the show and send the summary.
+$doctorIo = array(
+    'schedule' => function () {
+        $r = \LightHunt\lh_http('GET', \LightHunt\lh_fpp_url() . '/api/fppd/schedule', array(), null, 3);
+        return $r['code'] === 200 ? $r['json'] : null;
+    },
+    'check' => 'LightHunt\\lh_doctor_check',
+    'post' => 'LightHunt\\lh_post_json',
+);
+
 $state = lh_new_state();
+$doctor = lh_doctor_new_state();
+$doctorError = null;
 while (!lh_orphaned(__FILE__)) {
     // Wall time is for what the owner reads. Every interval runs on the monotonic clock, because a Pi
     // with no clock chip steps its wall clock (sometimes backwards) when NTP first answers.
     // (hrtime is a float on a 32-bit Pi, so divide rather than intdiv.)
-    lh_safe_tick($state, time(), $io, (int) (hrtime(true) / 1e9));
+    $mono = (int) (hrtime(true) / 1e9);
+    lh_safe_tick($state, time(), $io, $mono);
+    try {
+        lh_doctor_tick($doctor, time(), $mono, $doctorIo);
+    } catch (\Throwable $e) {
+        // A check never stops the now-playing reports. Logged once, not every 5 seconds.
+        if ($doctorError !== $e->getMessage()) {
+            lh_log('Show doctor error: ' . $e->getMessage());
+        }
+        $doctorError = $e->getMessage();
+    }
     sleep(LH_POLL_SECONDS);
 }

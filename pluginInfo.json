@@ -10,7 +10,7 @@
 	"allowUpdates": 1,
 	"releaseNotesStyle": "gitHistory",
 	"privacy": {
-		"summary": "Once paired, sends the song now playing, its artist and time left, the next songs, and the playlist name to lightshunt.com. This appears on your public Light Hunt display page.",
+		"summary": "Once paired, sends the song now playing, its artist and time left, the next songs, and the playlist name to lightshunt.com. This appears on your public Light Hunt display page. Unless you switch it off, it also sends a Show doctor summary: each check's name and result and the names it is about, never IP addresses.",
 		"sends": [
 			{
 				"to": "lightshunt.com",
@@ -34,6 +34,12 @@
 				"to": "lightshunt.com",
 				"what": "your feedback message, an email address only if you type one, plugin, FPP and PHP versions, whether paired, the last send result, reason and time, the last 20 plugin log lines only if you tick the box (home folder names, IP addresses and pairing keys removed), and the pairing key as a sign-in header when paired",
 				"why": "to send feedback to Light Hunt, only when you press Send on the plugin page",
+				"alwaysOn": false
+			},
+			{
+				"to": "lightshunt.com",
+				"what": "only while paired and the Show doctor summary switch is on (it starts on): the time of the check and, for each of five checks, its name, ok/look/fix, a count, and up to 20 sequence, file, playlist or controller names. Never IP addresses.",
+				"why": "to warn you on lightshunt.com if the show is not ready, 30 minutes before tonight's schedule starts and after you press Run again",
 				"alwaysOn": false
 			}
 		],
@@ -60,6 +66,13 @@
 				"where": "plugindata/lighthunt-fpp-plugin/status.json, or /dev/shm/lighthunt-fpp-plugin-status.json when the player has /dev/shm"
 			},
 			{
+				"what": "the last Show doctor results and whether the summary switch is on",
+				"about": "operator",
+				"keptDays": null,
+				"canDelete": true,
+				"where": "plugindata/lighthunt-fpp-plugin/doctor-results.json, doctor-settings.json and doctor-404"
+			},
+			{
 				"what": "process ID of the running poller",
 				"about": "operator",
 				"keptDays": null,
@@ -83,7 +96,7 @@
 			}
 		],
 		"closedCode": false,
-		"other": "Like FPP's own pages, the plugin's web routes ask for no password: anyone who can open this FPP's web pages can start pairing or unpair it and can see the paired display's name. Pairing is refused while already paired. Reads FPP's local API at 127.0.0.1 (status and media tags). Sends nothing until you pair, apart from feedback you press Send on. The key file is mode 0600. Unpair removes the key from this device; uninstalling removes the key, status file and log."
+		"other": "Like FPP's own pages, the plugin's web routes ask for no password: anyone who can open this FPP's web pages can start pairing or unpair it and can see the paired display's name. Pairing is refused while already paired. Reads FPP's local API at 127.0.0.1 (status, media tags and schedule). Show doctor reads FPP's channel output, playlist and schedule files, the first bytes of each .fseq, disk space, CPU temperature, vcgencmd get_throttled and timedatectl, and pings each controller address on your network once per check. Its channel layout check reads config/model-overlays.json in your browser and sends nothing. Sends nothing until you pair, apart from feedback you press Send on. The key file is mode 0600. Unpair removes the key from this device; uninstalling removes the key, status file and log."
 	},
 	"versions": [
 		{

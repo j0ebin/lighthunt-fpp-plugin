@@ -973,7 +973,7 @@ unpair();
 
 // The heartbeat leaves room for two lost posts before Light Hunt calls the sender stale (60 s).
 same(\LightHunt\LH_HEARTBEAT_SECONDS, 20, 'heartbeat is 20 seconds');
-same(LH_VERSION, '0.5.4', 'plugin version');
+same(LH_VERSION, '0.6.0', 'plugin version');
 
 // Intervals run on the monotonic clock: a wall clock that steps back (NTP on a Pi with no RTC) changes nothing.
 pair($KEY);
@@ -1310,6 +1310,222 @@ putenv('LIGHTHUNT_FPP_URL=http://127.0.0.1:1');
 lh_start_poller();
 check(!lh_daemon_running(), 'the page does not start the poller when fppd is not answering');
 unpair();
+
+/* ---------- Show doctor ---------- */
+
+function dfix($name)
+{
+    return json_decode(file_get_contents(__DIR__ . '/fixtures/doctor/' . $name . '.json'), true);
+}
+
+// Controllers: grouped by address, named without their IP, multicast and inactive ones left out.
+$ctl = LightHunt\lh_doc_controllers(dfix('co-universes'));
+same(array_column($ctl, 'label'), array('Garage F16', 'Universe 3', 'Mega tree'), 'controllers named by description, IP stripped, else by universe');
+same(array_column($ctl, 'ip'), array('192.168.1.50', '192.168.1.51', '192.168.1.52'), 'one controller per address; multicast and inactive skipped');
+same(LightHunt\lh_doc_strip_ip('Roof 10.0.0.9:4048 (F48)'), 'Roof (F48)', 'an IP and port are stripped from a label');
+same(LightHunt\lh_doc_controllers(null), array(), 'no universes file, no controllers');
+
+// Output channels: the highest channel any enabled output sends.
+same(LightHunt\lh_doc_output_channels(array(dfix('co-universes'))), 3072, 'universes output ends at channel 3072');
+same(LightHunt\lh_doc_output_channels(array(dfix('co-universes'), dfix('co-pixelStrings'))), 4000, 'pixel strings start at 0, so 4000 channels end at 4000');
+same(LightHunt\lh_doc_output_channels(array(array('channelOutputs' => array(array('enabled' => 0, 'startChannel' => 1, 'channelCount' => 99999))))), 0, 'a disabled output sends nothing');
+
+// FSEQ header channel count.
+same(LightHunt\lh_doc_fseq_channels('PSEQ' . "\x20\x00\x00\x02\x00\x00" . pack('V', 6000) . str_repeat("\0", 18)), 6000, 'fseq channel count at byte 10');
+same(LightHunt\lh_doc_fseq_channels('NOPE' . str_repeat("\0", 28)), null, 'not an fseq');
+
+// Playlist items, with a sub-playlist and a pause.
+$pls = array('Christmas Show' => dfix('playlist-christmas'), 'Halloween Extras' => dfix('playlist-extras'), 'Empty' => dfix('playlist-empty'));
+$miss = array();
+$items = LightHunt\lh_doc_playlist_items('Christmas Show', $pls, $miss);
+same(count($items), 5, 'lead-in media, two songs, sub-playlist video, one sequence; the pause is not a song');
+same($miss, array(), 'no missing playlists');
+$miss = array();
+LightHunt\lh_doc_playlist_items('Gone', $pls, $miss);
+same(array_keys($miss), array('Gone'), 'a missing playlist file is noted');
+$loop = array('A' => array('mainPlaylist' => array(array('type' => 'playlist', 'name' => 'A'))));
+$miss = array();
+same(LightHunt\lh_doc_playlist_items('A', $loop, $miss), array(), 'a playlist that includes itself ends');
+same(LightHunt\lh_doc_scheduled_playlists(dfix('schedule')), array('Christmas Show'), 'only enabled schedule entries count');
+
+same(LightHunt\lh_doc_output_channels(array(array('channelOutputs' => array(array('enabled' => 1, 'channelCount' => -1, 'universes' => array(
+    array('active' => 1, 'startChannel' => 1, 'channelCount' => 510, 'universeCount' => 4, 'type' => 1))))))), 2040, 'an E1.31 row covers channelCount x universeCount');
+same(array_column(LightHunt\lh_doc_controllers(array('channelOutputs' => array(array('enabled' => 1, 'universes' => array(
+    array('active' => 1, 'id' => 10, 'universeCount' => 3, 'type' => 1, 'address' => '10.0.0.8')))))), 'label'), array('Universes 10-12'), 'a row of 3 universes is named by its range');
+same(LightHunt\lh_doc_fseq_channels('FSEQ' . str_repeat("\0", 6) . pack('V', 99) . str_repeat("\0", 18)), 99, 'FSEQ magic is read too');
+$miss = array();
+$inl = array('P' => array('mainPlaylist' => array(
+    array('type' => 'sequence', 'enabled' => 0, 'sequenceName' => 'Off.fseq'),
+    array('type' => 'playlist', 'playlist' => array('name' => 'Sub', 'mainPlaylist' => array(array('type' => 'media', 'mediaName' => 'In.mp3')))),
+)));
+same(array_column(LightHunt\lh_doc_playlist_items('P', $inl, $miss), 'media'), array('In.mp3'), 'disabled entries skipped, inline sub-playlists read');
+same(LightHunt\lh_doc_tonight(array('schedule' => array('items' => array(
+    array('startTime' => strtotime('today 18:00'), 'command' => 'Volume Set', 'args' => array('70'))))), strtotime('today 15:00')), array(), 'a scheduled command is not a show');
+
+// Throttle bits.
+same(LightHunt\lh_doc_throttled('throttled=0x50005'), array('undervoltageNow' => true, 'undervoltageSince' => true, 'throttledNow' => true), 'throttle bits');
+same(LightHunt\lh_doc_throttled('throttled=0x0')['undervoltageNow'], false, 'no throttle');
+same(LightHunt\lh_doc_throttled('')['undervoltageNow'], null, 'unknown when not a Pi');
+
+// A whole run on a healthy show.
+$tonightStart = strtotime('today 17:30');
+$good = array(
+    'controllers' => $ctl,
+    'pings' => array('192.168.1.50' => true, '192.168.1.51' => true, '192.168.1.52' => true),
+    'outputChannels' => 4000,
+    'playlists' => $pls,
+    'scheduledPlaylists' => array('Christmas Show'),
+    'files' => array(
+        'sequences' => array('carol of the bells.fseq' => true, 'wizards in winter.fseq' => true, 'halloween/monster mash.fseq' => true),
+        'music' => array('welcome.mp3' => true, 'carol of the bells.mp3' => true, 'wizards in winter.mp3' => true),
+        'videos' => array('thriller.mp4' => true),
+    ),
+    'fseqChannels' => array('Carol of the Bells.fseq' => 3000, 'Wizards in Winter.fseq' => 4000, 'Halloween/Monster Mash.fseq' => 1200),
+    'tonight' => array(array('playlist' => 'Christmas Show', 'start' => $tonightStart)),
+    'health' => array('undervoltageNow' => false, 'undervoltageSince' => false, 'throttledNow' => false, 'diskPct' => 40.0, 'tempC' => 55.0, 'clockSynced' => true),
+);
+$res = LightHunt\lh_doctor_run($good);
+same(array_column($res, 'id'), LightHunt\LH_DOCTOR_IDS, 'five results in a fixed order');
+same(array_unique(array_column($res, 'status')), array('ok'), 'a healthy show is all ok');
+same(LightHunt\lh_doctor_verdict($res)['text'], 'Ready for tonight.', 'healthy verdict');
+
+// Everything wrong at once.
+$bad = $good;
+$bad['pings']['192.168.1.51'] = false;
+$bad['outputChannels'] = 3072;
+unset($bad['files']['sequences']['wizards in winter.fseq'], $bad['files']['videos']['thriller.mp4']);
+$bad['playlists']['Christmas Show']['mainPlaylist'][] = array('type' => 'playlist', 'name' => 'Deleted');
+$bad['health'] = array('undervoltageNow' => true, 'undervoltageSince' => true, 'throttledNow' => false, 'diskPct' => 93.2, 'tempC' => 82.0, 'clockSynced' => false);
+$res = array();
+foreach (LightHunt\lh_doctor_run($bad) as $r) {
+    $res[$r['id']] = $r;
+}
+same($res['controller_unreachable']['status'], 'fail', 'an unreachable controller fails');
+same($res['controller_unreachable']['models'], array('Universe 3'), 'it is named, not addressed');
+check(strpos(json_encode(LightHunt\lh_doctor_run($bad)), '192.168.') === false, 'no result carries an IP address');
+same($res['sequence_exceeds_outputs']['status'], 'warn', 'a sequence bigger than the outputs warns');
+same($res['sequence_exceeds_outputs']['models'], array('Wizards in Winter.fseq'), 'the sequence over 3072 channels is named');
+same($res['missing_file']['status'], 'fail', 'missing files fail');
+same($res['missing_file']['models'], array('Deleted (playlist)', 'Wizards in Winter.fseq', 'Thriller.mp4'), 'missing playlist, sequence and video named');
+same($res['pi_health']['status'], 'fail', 'under-voltage now fails');
+same($res['pi_health']['models'], array('under-voltage', 'disk', 'clock', 'temperature'), 'health problems listed');
+check(stripos($res['pi_health']['detail'], 'supply') === false && stripos($res['pi_health']['detail'], 'cable') === false, 'no power advice in health detail');
+same(LightHunt\lh_doctor_verdict(LightHunt\lh_doctor_run($bad))['status'], 'fail', 'any fail makes the verdict not ready');
+
+// Tonight.
+$t = $good;
+$t['tonight'] = array();
+same(LightHunt\lh_doctor_run($t)[3]['status'], 'warn', 'nothing scheduled tonight warns');
+$t['tonight'] = null;
+same(LightHunt\lh_doctor_run($t)[3]['status'], 'warn', 'an unreadable schedule warns');
+$t['tonight'] = array(array('playlist' => 'Empty', 'start' => $tonightStart));
+same(LightHunt\lh_doctor_run($t)[3]['status'], 'fail', 'a scheduled playlist with no songs fails');
+$t = $good;
+$t['controllers'] = array();
+$t['outputChannels'] = 0;
+same(LightHunt\lh_doctor_run($t)[0]['status'], 'ok', 'no controllers to ping is ok');
+same(LightHunt\lh_doctor_run($t)[1]['status'], 'warn', 'no outputs at all warns');
+
+// The report body: ids, statuses, counts, names. No details, no IPs.
+$body = LightHunt\lh_doctor_report_body(LightHunt\lh_doctor_run($bad), 1700000000);
+same($body['checkedAt'], '2023-11-14T22:13:20+00:00', 'checkedAt is ISO');
+same(array_keys($body['results'][0]), array('id', 'status', 'count', 'models'), 'a report row has id, status, count, models');
+check(!isset($body['results'][0]['detail']), 'details stay on the player');
+$leak = LightHunt\lh_doctor_report_body(array(array('id' => 'controller_unreachable', 'status' => 'fail', 'count' => 1, 'detail' => '', 'models' => array('Roof 10.1.2.3'))), 0);
+same($leak['results'][0]['models'], array('Roof'), 'an IP that slipped into a name is stripped before sending');
+
+// Tonight from fppd's schedule answer.
+$now = strtotime('today 15:00');
+$sched = array('schedule' => array('items' => array(
+    array('startTime' => strtotime('today 21:00'), 'endTime' => strtotime('today 23:00'), 'args' => array('Late Show')),
+    array('startTime' => strtotime('today 17:30'), 'endTime' => strtotime('today 21:00'), 'args' => array('Christmas Show')),
+    array('startTime' => strtotime('tomorrow 17:30'), 'endTime' => strtotime('tomorrow 21:00'), 'args' => array('Christmas Show')),
+)));
+same(array_column(LightHunt\lh_doc_tonight($sched, $now), 'playlist'), array('Christmas Show', 'Late Show'), 'tonight is sorted and stops at noon tomorrow');
+same(LightHunt\lh_doc_tonight(array('nope' => 1), $now), null, 'an unusable schedule answer is null');
+
+// Sending: off, unpaired, sent, 404 logged once.
+$sent = array();
+$okPost = function ($path, $json, $key) use (&$sent) {
+    $sent[] = array($path, json_decode($json, true), $key);
+    return array('code' => 200, 'body' => '{}');
+};
+$doc = array('checkedAt' => 1700000000, 'results' => LightHunt\lh_doctor_run($bad));
+unpair();
+same(LightHunt\lh_doctor_send($doc, $okPost), 'unpaired', 'nothing is sent while unpaired');
+pair($KEY);
+same(LightHunt\lh_doctor_report_enabled(), true, 'the report is on by default');
+same(LightHunt\lh_doctor_send($doc, $okPost), 'sent', 'a paired player sends');
+same($sent[0][0], '/api/relay/doctor', 'to the doctor endpoint');
+same($sent[0][2], $KEY, 'with the pairing key');
+check(strpos(json_encode($sent[0][1]), '192.168.') === false, 'the sent body has no IP');
+same(lighthuntfpppluginDoctorSettingSet(array('report' => 'yes'))['ok'], false, 'the setting must be a boolean');
+same(lighthuntfpppluginDoctorSettingSet(array('report' => false))['ok'], true, 'the report can be turned off');
+same(LightHunt\lh_doctor_send($doc, $okPost), 'off', 'nothing is sent when turned off');
+lighthuntfpppluginDoctorSettingSet(array('report' => true));
+$missing = function () {
+    return array('code' => 404, 'body' => '');
+};
+same(LightHunt\lh_doctor_send($doc, $missing), 'missing', 'a 404 means the endpoint is not there yet');
+LightHunt\lh_doctor_send($doc, $missing);
+same(substr_count((string) @file_get_contents(lh_log_file()), 'does not take Show doctor reports'), 1, 'the 404 is logged once');
+LightHunt\lh_doctor_send($doc, $okPost);
+check(!is_file(lh_file('doctor-404')), 'a later send clears the 404 marker');
+
+// Run again from the page: checks, saves, sends.
+$fakeGather = function ($t) use ($good) {
+    return $good;
+};
+$sent = array();
+$r = lighthuntfpppluginDoctorRunWith($fakeGather, $okPost);
+same($r['sent'], 'sent', 'Run again sends the summary');
+same($r['last']['verdict']['text'], 'Ready for tonight.', 'Run again returns the verdict');
+same(lh_read_json('doctor-results.json')['verdict']['status'], 'ok', 'the results are saved for the page');
+
+// The poller sends once, inside the 30 minutes before the first start.
+$start = strtotime('today 17:30');
+$sent = array();
+$checks0 = 0;
+$io = array(
+    'schedule' => function () use ($sched) {
+        return $sched;
+    },
+    'check' => function ($t) use (&$checks0, $good) {
+        $checks0++;
+        return array('checkedAt' => $t, 'results' => LightHunt\lh_doctor_run($good), 'verdict' => array());
+    },
+    'post' => $okPost,
+);
+$D = LightHunt\lh_doctor_new_state();
+LightHunt\lh_doctor_tick($D, $start - 3600, 0, $io);
+same(count($sent), 0, 'nothing an hour before');
+LightHunt\lh_doctor_tick($D, $start - 1700, 1, $io);
+same(count($sent), 1, 'one report 28 minutes before');
+LightHunt\lh_doctor_tick($D, $start - 1600, 2, $io);
+LightHunt\lh_doctor_tick($D, $start - 100, 400, $io);
+same(count($sent), 1, 'only one report per start');
+same($checks0, 1, 'the checks run once');
+$D = LightHunt\lh_doctor_new_state();
+LightHunt\lh_doctor_tick($D, $start + 60, 0, $io);
+same(count($sent), 1, 'no report after the show started');
+unpair();
+$D = LightHunt\lh_doctor_new_state();
+LightHunt\lh_doctor_tick($D, $start - 1700, 0, $io);
+same(count($sent), 1, 'no report while unpaired');
+
+/* ---------- Show doctor channel layout config ---------- */
+
+$dcfg = $tmp . '/design-config';
+@mkdir($dcfg, 0777, true);
+file_put_contents($dcfg . '/model-overlays.json', json_encode(array('models' => array(array('Name' => 'Arch', 'StartChannel' => 1, 'ChannelCount' => 150)))));
+copy(__DIR__ . '/fixtures/doctor/co-universes.json', $dcfg . '/co-universes.json');
+$dc = LightHunt\lh_doctor_design_config($dcfg);
+check('design config reads model overlays', $dc['overlays']['models'][0]['Name'] === 'Arch');
+check('design config reads universes', is_array($dc['universes']['channelOutputs']));
+check('design config lists four other output files, null when missing', count($dc['others']) === 4 && $dc['others'][0] === null);
+$dc = LightHunt\lh_doctor_design_config($dcfg . '/nope');
+check('design config is all null with no config folder', $dc['overlays'] === null && $dc['universes'] === null);
+check('status page inlines the engine bundle', strpos(file_get_contents(__DIR__ . '/../status.php'), "readfile(__DIR__ . '/js/showdoctor.js')") !== false && is_file(__DIR__ . '/../js/showdoctor.js'));
 
 /* ---------- Log never holds a key ---------- */
 

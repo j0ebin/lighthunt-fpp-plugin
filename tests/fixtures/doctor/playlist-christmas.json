@@ -1,0 +1,15 @@
+{
+  "name": "Christmas Show",
+  "repeat": 1,
+  "loopCount": 0,
+  "random": 0,
+  "leadIn": [ { "type": "media", "enabled": 1, "playOnce": 0, "mediaName": "Welcome.mp3" } ],
+  "mainPlaylist": [
+    { "type": "both", "enabled": 1, "playOnce": 0, "sequenceName": "Carol of the Bells.fseq", "mediaName": "Carol of the Bells.mp3" },
+    { "type": "both", "enabled": 1, "playOnce": 0, "sequenceName": "Wizards in Winter.fseq", "mediaName": "Wizards in Winter.mp3" },
+    { "type": "pause", "enabled": 1, "playOnce": 0, "duration": 5 },
+    { "type": "playlist", "enabled": 1, "playOnce": 0, "name": "Halloween Extras" },
+    { "type": "sequence", "enabled": 1, "playOnce": 0, "sequenceName": "Halloween/Monster Mash.fseq" }
+  ],
+  "leadOut": []
+}

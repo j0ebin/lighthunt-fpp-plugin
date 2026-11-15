@@ -1,10 +1,66 @@
 <div class="container-fluid" id="lh-root">
+  <style>
+    /* FPP 7 to 9 ship older Bootstrap builds that lack some of these helpers: FPP 7.5 has no
+       d-none, so every hidden section showed at once, and the status badges came out blank.
+       Same values as Bootstrap 5.3: FPP 10 looks unchanged. */
+    #lh-root .d-none { display: none !important; }
+    #lh-root .text-bg-success { color: #fff; background-color: #198754; }
+    #lh-root .text-bg-warning { color: #000; background-color: #ffc107; }
+    #lh-root .text-bg-danger { color: #fff; background-color: #dc3545; }
+    #lh-root .text-bg-secondary { color: #fff; background-color: #6c757d; }
+    #lh-root .gap-3 { gap: 1rem; }
+    #lh-root .align-items-start { align-items: flex-start; }
+    #lh-root .fw-semibold { font-weight: 600; }
+    #lh-root .ms-2 { margin-left: .5rem; }
+    #lh-root .text-body-secondary { color: #6c757d; }
+    #lh-root .list-group.mb-3 { margin-bottom: 1rem; }
+  </style>
   <h1 class="h3 mb-3">Light Hunt: show what's playing</h1>
   <p class="text-body-secondary">
     Shows the song Falcon Player is playing on your display page at lightshunt.com.
     Falcon Player runs your lights as usual. Unless you turn on song voting below, this plugin only reads what is playing.
   </p>
 
+  <ul class="nav nav-tabs mb-3" role="tablist">
+    <li class="nav-item" role="presentation">
+      <button type="button" class="nav-link active" id="lh-tab-main" role="tab" aria-controls="lh-pane-main" aria-selected="true">Now playing</button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button type="button" class="nav-link" id="lh-tab-doctor" role="tab" aria-controls="lh-pane-doctor" aria-selected="false">Show doctor</button>
+    </li>
+  </ul>
+
+  <div id="lh-pane-doctor" role="tabpanel" aria-labelledby="lh-tab-doctor" class="d-none">
+    <div class="card mb-3">
+      <div class="card-body">
+        <h2 class="h5 card-title">Is the show ready for tonight?</h2>
+        <p class="text-body-secondary">Checks this player: controllers, sequences, playlist files, tonight's schedule and the Pi itself. It changes nothing.</p>
+        <div id="lh-doc-verdict" class="alert d-none" role="status"></div>
+        <ul id="lh-doc-rows" class="list-group mb-3"></ul>
+        <p class="mb-3">
+          <button type="button" class="btn btn-primary" id="lh-doc-run">Run checks</button>
+          <span id="lh-doc-when" class="text-body-secondary small ms-2"></span>
+        </p>
+        <div class="form-check form-switch mb-1">
+          <input class="form-check-input" type="checkbox" role="switch" id="lh-doc-report">
+          <label class="form-check-label" for="lh-doc-report">Send a summary to Light Hunt 30 minutes before the show, and after each check</label>
+        </div>
+        <p class="form-text mb-0" id="lh-doc-report-note">
+          It sends which checks passed and the names of anything that needs fixing, so Show tools on Light Hunt can tell you. Never controller addresses.
+        </p>
+      </div>
+    </div>
+    <div class="card mb-3">
+      <div class="card-body">
+        <h2 class="h5 card-title">Channel layout</h2>
+        <p class="text-body-secondary">Checks the models and outputs xLights uploaded to this player for channels two props share, props past the last channel and universes used twice. Fix problems in xLights, then upload again with FPP Connect.</p>
+        <div id="lh-doc-design-verdict" class="alert d-none" role="status"></div>
+        <ul id="lh-doc-design" class="list-group"></ul>
+      </div>
+    </div>
+  </div>
+
+  <div id="lh-pane-main" role="tabpanel" aria-labelledby="lh-tab-main">
   <div id="lh-error" class="alert alert-danger d-none" role="alert"></div>
   <div id="lh-warn" class="alert alert-warning d-none" role="status"></div>
 
@@ -98,9 +154,12 @@
     </div>
   </div>
 
+  </div>
+
   <p class="text-body-secondary small">Plugin version <span id="lh-version"></span>. <a href="plugin.php?plugin=lighthunt-fpp-plugin&page=about.php">What this sends</a></p>
 </div>
 
+<script><?php readfile(__DIR__ . '/js/showdoctor.js'); ?></script>
 <script>
 (function () {
   var API = '/api/plugin/lighthunt-fpp-plugin/';
@@ -302,6 +361,139 @@
         fbSync();
       });
   });
+
+  // Show doctor tab.
+  var DOC_TITLES = {
+    controller_unreachable: 'Controllers answer',
+    sequence_exceeds_outputs: 'Sequences fit the outputs',
+    missing_file: 'Playlist files are on this player',
+    nothing_tonight: 'Something plays tonight',
+    pi_health: 'Pi health'
+  };
+  // The word carries the meaning; the colour only repeats it.
+  var DOC_BADGE = { ok: ['OK', 'text-bg-success'], warn: ['Look', 'text-bg-warning'], fail: ['Fix', 'text-bg-danger'] };
+  var DOC_ALERT = { ok: 'alert-success', warn: 'alert-warning', fail: 'alert-danger' };
+  var docLoaded = false;
+  var docBusy = false;
+
+  function renderDoctor(r) {
+    $('lh-doc-report').checked = !!r.report;
+    var last = r.last;
+    var rows = $('lh-doc-rows');
+    rows.textContent = '';
+    if (!last || !last.results) {
+      show('lh-doc-verdict', false);
+      $('lh-doc-when').textContent = 'Not checked yet.';
+      $('lh-doc-run').textContent = 'Run checks';
+      return;
+    }
+    $('lh-doc-run').textContent = 'Run again';
+    $('lh-doc-verdict').className = 'alert ' + (DOC_ALERT[last.verdict.status] || 'alert-secondary');
+    $('lh-doc-verdict').textContent = last.verdict.text;
+    show('lh-doc-verdict', true);
+    last.results.forEach(function (res) {
+      rows.appendChild(docRow(res.status, DOC_TITLES[res.id] || res.id, [res.detail]));
+    });
+    $('lh-doc-when').textContent = 'Checked ' + ago(last.checkedAt) + '.';
+  }
+
+  function docRow(status, title, lines) {
+    var li = document.createElement('li');
+    li.className = 'list-group-item d-flex gap-3 align-items-start';
+    var b = DOC_BADGE[status] || DOC_BADGE.warn;
+    var badge = document.createElement('span');
+    badge.className = 'badge ' + b[1] + ' mt-1';
+    badge.style.minWidth = '3rem';
+    badge.textContent = b[0];
+    var body = document.createElement('div');
+    var t = document.createElement('div');
+    t.className = 'fw-semibold';
+    t.textContent = title;
+    body.appendChild(t);
+    lines.forEach(function (line) {
+      if (!line) { return; }
+      var d = document.createElement('div');
+      d.className = 'small text-body-secondary';
+      d.textContent = line;
+      body.appendChild(d);
+    });
+    li.appendChild(badge);
+    li.appendChild(body);
+    return li;
+  }
+
+  // Channel layout: the same checks as lightshunt.com/doctor, run here in the browser. Nothing is sent.
+  function renderDesign(cfg) {
+    var list = $('lh-doc-design');
+    var verdict = $('lh-doc-design-verdict');
+    list.textContent = '';
+    var models = cfg && cfg.overlays && cfg.overlays.models;
+    if (!window.LightHuntShowDoctor || !models || !models.length) {
+      verdict.className = 'alert alert-secondary';
+      verdict.textContent = window.LightHuntShowDoctor
+        ? 'This player has no models from xLights, so there is nothing to check. Upload them from xLights with FPP Connect.'
+        : 'The channel layout check did not load. Reload the page.';
+      show('lh-doc-design-verdict', true);
+      return;
+    }
+    var r = window.LightHuntShowDoctor.runFpp(cfg);
+    var worst = r.findings.some(function (f) { return f.severity === 'fail'; }) ? 'fail' : r.findings.length ? 'warn' : 'ok';
+    verdict.className = 'alert ' + DOC_ALERT[worst];
+    verdict.textContent = r.verdict + ' (' + r.models + ' models checked).';
+    show('lh-doc-design-verdict', true);
+    r.findings.forEach(function (f) {
+      var names = f.models.length > 5 ? f.models.slice(0, 5).join(', ') + ' and ' + (f.models.length - 5) + ' more' : f.models.join(', ');
+      list.appendChild(docRow(f.severity, f.title, [f.models.length > 2 ? names : '', f.fixHint]));
+    });
+  }
+
+  function loadDesign() {
+    call('GET', 'doctordesign').then(renderDesign).catch(function () {
+      $('lh-doc-design-verdict').className = 'alert alert-secondary';
+      $('lh-doc-design-verdict').textContent = 'Could not read the models on this player.';
+      show('lh-doc-design-verdict', true);
+    });
+  }
+
+  function loadDoctor() {
+    call('GET', 'doctor').then(function (r) { docLoaded = true; renderDoctor(r); })
+      .catch(function () { $('lh-doc-when').textContent = 'Could not read the last check.'; });
+    loadDesign();
+  }
+
+  function selectTab(doctor) {
+    $('lh-tab-main').classList.toggle('active', !doctor);
+    $('lh-tab-doctor').classList.toggle('active', doctor);
+    $('lh-tab-main').setAttribute('aria-selected', doctor ? 'false' : 'true');
+    $('lh-tab-doctor').setAttribute('aria-selected', doctor ? 'true' : 'false');
+    show('lh-pane-main', !doctor);
+    show('lh-pane-doctor', doctor);
+    if (doctor && !docLoaded) { loadDoctor(); }
+  }
+  $('lh-tab-main').addEventListener('click', function () { selectTab(false); });
+  $('lh-tab-doctor').addEventListener('click', function () { selectTab(true); });
+
+  $('lh-doc-run').addEventListener('click', function () {
+    if (docBusy) { return; }
+    docBusy = true;
+    $('lh-doc-run').disabled = true;
+    $('lh-doc-when').textContent = 'Checking...';
+    call('POST', 'doctorrun').then(function (r) {
+      renderDoctor({ last: r.last, report: $('lh-doc-report').checked });
+      loadDesign();
+    }).catch(function () {
+      $('lh-doc-when').textContent = 'The check did not finish. Try again.';
+    }).then(function () { docBusy = false; $('lh-doc-run').disabled = false; });
+  });
+
+  $('lh-doc-report').addEventListener('change', function () {
+    var on = $('lh-doc-report').checked;
+    call('POST', 'doctorsetting', { report: on }).then(function (r) {
+      if (!r.ok) { $('lh-doc-report').checked = !on; $('lh-doc-when').textContent = r.error; }
+    }).catch(function () { $('lh-doc-report').checked = !on; });
+  });
+
+  if (location.hash === '#doctor') { selectTab(true); }
 
   ensure();
 })();

@@ -2,7 +2,7 @@
   <h1 class="h3 mb-3">Light Hunt: what this sends</h1>
   <p>
     This plugin tells <strong>lightshunt.com</strong> which song your show is playing, so visitors see it on your display page.
-    It does nothing until you pair it. The one other thing it can send is feedback, and only when you press <em>Send</em> on the plugin page (see below).
+    It does nothing until you pair it. It can also send feedback, only when you press <em>Send</em> on the plugin page, and a Show doctor summary (see below).
     It never controls your show unless you turn on song voting (see below).
   </p>
 
@@ -37,6 +37,11 @@
     <li>If the player is paired, the pairing key goes along as a sign-in header (not in the message), so Light Hunt can tell which display wrote. Unpaired, the report is anonymous apart from any email you type.</li>
   </ul>
   <p>Light Hunt support reads the report. No sequences, audio files, network settings, location or passwords are included. See the <a href="https://lightshunt.com/privacy" target="_blank" rel="noopener noreferrer">privacy policy</a>.</p>
+
+  <h2 class="h5" id="doctor">Show doctor</h2>
+  <p>The <em>Show doctor</em> tab checks whether tonight's show is ready. The checks run on this player: they read Falcon Player's output, playlist and schedule settings, look for each sequence and audio file, read the start of each <code>.fseq</code> file, check disk space, CPU temperature, power warnings and the clock, and ping each controller address on your network once.</p>
+  <p>When the player is paired and <em>Send a summary to Light Hunt</em> is on (it starts on), the plugin sends a short summary to lightshunt.com 30 minutes before tonight's schedule starts and each time you press <em>Run again</em>, so Light Hunt can warn you. The summary has the time of the check and, for each check, its name, whether it passed, a count, and up to 20 names of the sequences, files, playlists or controllers it is about. <strong>It never includes IP addresses</strong>: a controller is named by the description you gave it in Falcon Player, with any address removed. Turn the switch off and nothing is sent.</p>
+  <p>The <em>Channel layout</em> part reads the models xLights uploaded to this player and its output settings, and checks them in your browser for props on the same channels. Nothing from it is saved or sent.</p>
 
   <h2 class="h5">What stays on this device</h2>
   <ul>

@@ -12,6 +12,10 @@ use function LightHunt\lh_clock_warning;
 use function LightHunt\lh_config;
 use function LightHunt\lh_build_feedback;
 use function LightHunt\lh_daemon_running;
+use function LightHunt\lh_doctor_check;
+use function LightHunt\lh_doctor_design_config;
+use function LightHunt\lh_doctor_report_enabled;
+use function LightHunt\lh_doctor_send;
 use function LightHunt\lh_data_dir;
 use function LightHunt\lh_encode_report;
 use function LightHunt\lh_feedback_context;
@@ -20,6 +24,7 @@ use function LightHunt\lh_fpp_uuid;
 use function LightHunt\lh_file;
 use function LightHunt\lh_local_deadline;
 use function LightHunt\lh_log;
+use function LightHunt\lh_media_dir;
 use function LightHunt\lh_pair_url;
 use function LightHunt\lh_pending_deadline;
 use function LightHunt\lh_post_json;
@@ -47,6 +52,10 @@ function getEndpointslighthuntfppplugin()
         array('method' => 'POST', 'endpoint' => 'voting', 'callback' => 'lighthuntfpppluginVoting'),
         array('method' => 'GET', 'endpoint' => 'feedbackpreview', 'callback' => 'lighthuntfpppluginFeedbackPreview'),
         array('method' => 'POST', 'endpoint' => 'feedback', 'callback' => 'lighthuntfpppluginFeedback'),
+        array('method' => 'GET', 'endpoint' => 'doctor', 'callback' => 'lighthuntfpppluginDoctor'),
+        array('method' => 'POST', 'endpoint' => 'doctorrun', 'callback' => 'lighthuntfpppluginDoctorRun'),
+        array('method' => 'GET', 'endpoint' => 'doctordesign', 'callback' => 'lighthuntfpppluginDoctorDesign'),
+        array('method' => 'POST', 'endpoint' => 'doctorsetting', 'callback' => 'lighthuntfpppluginDoctorSetting'),
     );
 }
 
@@ -290,4 +299,50 @@ function lighthuntfpppluginFeedbackSend($in, $post = null)
     $result = lh_feedback_result($r);
     lh_log($result['ok'] ? 'Feedback sent' : 'Feedback not sent (HTTP ' . (int) $r['code'] . ')');
     return $result;
+}
+
+/* ---------- Show doctor ---------- */
+
+// GET /api/plugin/lighthunt-fpp-plugin/doctor: the last check (null before the first) and the report switch.
+function lighthuntfpppluginDoctor()
+{
+    return json(array('ok' => true, 'last' => lh_read_json('doctor-results.json'), 'report' => lh_doctor_report_enabled(), 'paired' => (bool) lh_config()));
+}
+
+// GET /api/plugin/lighthunt-fpp-plugin/doctordesign: models and outputs for the channel layout check on this page.
+function lighthuntfpppluginDoctorDesign()
+{
+    return json(array('ok' => true) + lh_doctor_design_config(lh_media_dir() . '/config'));
+}
+
+// POST /api/plugin/lighthunt-fpp-plugin/doctorrun: Run again. Checks now, then sends the summary if the report is on.
+function lighthuntfpppluginDoctorRun()
+{
+    return json(lighthuntfpppluginDoctorRunWith());
+}
+
+/** $gather and $post are for tests. */
+function lighthuntfpppluginDoctorRunWith($gather = null, $post = null)
+{
+    $doc = lh_doctor_check(time(), $gather);
+    return array('ok' => true, 'last' => $doc, 'sent' => lh_doctor_send($doc, $post));
+}
+
+// POST /api/plugin/lighthunt-fpp-plugin/doctorsetting  {report: true|false}
+function lighthuntfpppluginDoctorSetting()
+{
+    $in = json_decode((string) file_get_contents('php://input'), true);
+    return json(lighthuntfpppluginDoctorSettingSet(is_array($in) ? $in : array()));
+}
+
+function lighthuntfpppluginDoctorSettingSet($in)
+{
+    if (!isset($in['report']) || !is_bool($in['report'])) {
+        return array('ok' => false, 'error' => 'report must be true or false');
+    }
+    if (!lh_write_json('doctor-settings.json', array('report' => $in['report'], 'changedAt' => gmdate('c')))) {
+        return array('ok' => false, 'error' => lh_cant_save_message());
+    }
+    lh_log($in['report'] ? 'Show doctor pre-show report turned on' : 'Show doctor pre-show report turned off');
+    return array('ok' => true, 'report' => $in['report']);
 }
